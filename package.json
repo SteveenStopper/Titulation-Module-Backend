@@ -1,0 +1,26 @@
+{
+  "name": "mod-titulacion-backend",
+  "version": "1.0.0",
+  "description": "Modulo de titulacion para el Instituto Superior Tecnologico los Andes.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "node index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:studio": "prisma studio"
+  },
+  "author": "Steveen Stopper",
+  "license": "ISC",
+  "dependencies": {
+    "@prisma/client": "^6.16.2",
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "prisma": "^6.16.2",
+    "winston": "^3.17.0",
+    "zod": "^4.1.11"
+  }
+}

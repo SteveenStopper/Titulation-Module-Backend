@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model documents {
+  id_document Int                @id @default(autoincrement())
+  doc_type    documents_doc_type
+  file_path   String             @db.VarChar(255)
+  upload_date DateTime?          @default(now()) @db.DateTime(0)
+  id_user     Int
+  users       users              @relation(fields: [id_user], references: [id_user], onDelete: NoAction, onUpdate: NoAction, map: "fk_documents_users")
+
+  @@index([id_user], map: "fk_documents_users")
+}
+
+model roles {
+  id_rol    Int      @id @default(autoincrement())
+  rol_name  String   @db.VarChar(45)
+  is_active Boolean? @default(true)
+  users     users[]
+}
+
+model users {
+  id_user              Int                    @id @default(autoincrement())
+  firstname            String                 @db.VarChar(45)
+  lastname             String                 @db.VarChar(45)
+  email                String                 @unique(map: "email") @db.VarChar(100)
+  password             String                 @db.VarChar(255)
+  is_active            Boolean?               @default(true)
+  created_at           DateTime?              @default(now()) @db.DateTime(0)
+  updated_at           DateTime?              @default(now()) @db.DateTime(0)
+  id_rol               Int
+  documents            documents[]
+  internships_practice internships_practice[]
+  modality             modality[]
+  roles                roles                  @relation(fields: [id_rol], references: [id_rol], onDelete: Cascade, onUpdate: NoAction, map: "fk_users_roles")
+  vouchers             vouchers[]
+
+  @@index([id_rol], map: "fk_users_roles")
+}
+
+model vouchers {
+  id_voucher  Int             @id @default(autoincrement())
+  v_type      vouchers_v_type
+  amount      Decimal         @db.Decimal(10, 2)
+  reference   String?         @db.VarChar(100)
+  description String?         @db.VarChar(255)
+  vouchers    String?         @db.VarChar(255)
+  id_user     Int
+  users       users           @relation(fields: [id_user], references: [id_user], onDelete: NoAction, onUpdate: NoAction, map: "fk_vouchers_users")
+
+  @@index([id_user], map: "fk_vouchers_users")
+}
+
+model internships_practice {
+  id_internship_practice Int                       @id @default(autoincrement())
+  type                   internships_practice_type
+  notes                  Decimal?                  @db.Decimal(4, 2)
+  id_user                Int
+  users                  users                     @relation(fields: [id_user], references: [id_user], onDelete: NoAction, onUpdate: NoAction, map: "fk_internships_users")
+
+  @@index([id_user], map: "fk_internships_users")
+}
+
+model modality {
+  id_modality Int    @id @default(autoincrement())
+  title       String @db.VarChar(100)
+  career      String @db.VarChar(100)
+  professor   String @db.VarChar(100)
+  id_user     Int
+  users       users  @relation(fields: [id_user], references: [id_user], onDelete: NoAction, onUpdate: NoAction, map: "fk_modality_users")
+
+  @@index([id_user], map: "fk_modality_users")
+}
+
+enum documents_doc_type {
+  solicitud
+  oficio
+  informe_final
+  acta
+  otro
+}
+
+enum vouchers_v_type {
+  pago_matricula
+  pago_titulacion
+  pago_certificado
+  pago_acta_grado
+  otro
+}
+
+enum internships_practice_type {
+  Pre_profesional
+  Vinculacion
+  Pasantia
+  Otro
+}

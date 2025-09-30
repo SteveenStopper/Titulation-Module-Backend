@@ -1,0 +1,103 @@
+# Dependencias
+/node_modules
+/.pnp
+.pnp.*
+
+# Entorno
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+*.log
+logs
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Directorios de desarrollo
+/dist
+/build
+/.cache
+/coverage
+
+# Prisma
+/prisma/migrations/**/migration.sql
+/prisma/migrations/**/migration_lock.toml
+/prisma/migrations/**/migration.toml
+
+# Uploads
+/uploads/*
+!/uploads/.gitkeep
+
+# IDEs y editores
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Testing
+/coverage
+.nyc_output
+
+# Misc
+*.pem
+*.p12
+*.key
+*.crt
+*.cer
+*.pfx
+*.der
+
+# Archivos temporales
+.tmp
+.temp
+*.tmp
+*.swp
+*~.nib
+
+# Archivos de configuración local
+.eslintcache
+.stylelintcache
+
+# Archivos de configuración de depuración
+node_modules/.cache/
+
+# Archivos de configuración de Windows
+[Dd]esktop.ini
+
+# Archivos de configuración de macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Archivos de configuración de Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Archivos de configuración de Visual Studio Code
+.history
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
