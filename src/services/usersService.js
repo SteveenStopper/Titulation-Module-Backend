@@ -10,112 +10,122 @@ function parseBoolean(value, defaultValue = true) {
 
 async function listUsers(query) {
   const activeOnly = parseBoolean(query.activeOnly, true);
-  return prisma.users.findMany({
-    where: activeOnly ? { is_active: true } : undefined,
-    orderBy: { id_user: "asc" },
+  const rows = await prisma.usuarios.findMany({
+    where: activeOnly ? { activo: true } : undefined,
+    orderBy: { usuario_id: "asc" },
     select: {
-      id_user: true,
-      firstname: true,
-      lastname: true,
-      email: true,
-      is_active: true,
-      created_at: true,
-      updated_at: true,
-      id_rol: true,
+      usuario_id: true,
+      nombre: true,
+      apellido: true,
+      correo: true,
+      activo: true,
+      creado_en: true,
     },
   });
+  return rows.map(r => ({
+    id_user: r.usuario_id,
+    firstname: r.nombre,
+    lastname: r.apellido,
+    email: r.correo,
+    is_active: r.activo,
+    created_at: r.creado_en,
+    updated_at: r.creado_en,
+    id_rol: null,
+  }));
 }
 
 async function getUserById(id) {
-  return prisma.users.findUnique({
-    where: { id_user: id },
-    select: {
-      id_user: true,
-      firstname: true,
-      lastname: true,
-      email: true,
-      is_active: true,
-      created_at: true,
-      updated_at: true,
-      id_rol: true,
-    },
+  const u = await prisma.usuarios.findUnique({
+    where: { usuario_id: Number(id) },
+    select: { usuario_id: true, nombre: true, apellido: true, correo: true, activo: true, creado_en: true },
   });
+  if (!u) return null;
+  return {
+    id_user: u.usuario_id,
+    firstname: u.nombre,
+    lastname: u.apellido,
+    email: u.correo,
+    is_active: u.activo,
+    created_at: u.creado_en,
+    updated_at: u.creado_en,
+    id_rol: null,
+  };
 }
 
 async function createUser(payload) {
   const { firstname, lastname, email, password, id_rol, is_active } = payload;
-  if (!firstname || !lastname || !email || !password || typeof id_rol !== "number") {
-    const err = new Error("Campos requeridos: firstname, lastname, email, password, id_rol (number)");
+  if (!firstname || !lastname || !email || !password) {
+    const err = new Error("Campos requeridos: firstname, lastname, email, password");
     err.status = 400;
     throw err;
   }
 
   const hashed = await hashPassword(password);
 
-  return prisma.users.create({
+  const created = await prisma.usuarios.create({
     data: {
-      firstname,
-      lastname,
-      email,
-      password: hashed,
-      id_rol,
-      is_active: is_active === undefined ? true : Boolean(is_active),
+      nombre: firstname,
+      apellido: lastname,
+      correo: email,
+      contrase_a_hash: hashed,
+      activo: is_active === undefined ? true : Boolean(is_active),
     },
-    select: {
-      id_user: true,
-      firstname: true,
-      lastname: true,
-      email: true,
-      is_active: true,
-      created_at: true,
-      updated_at: true,
-      id_rol: true,
-    },
+    select: { usuario_id: true, nombre: true, apellido: true, correo: true, activo: true, creado_en: true },
   });
+  return {
+    id_user: created.usuario_id,
+    firstname: created.nombre,
+    lastname: created.apellido,
+    email: created.correo,
+    is_active: created.activo,
+    created_at: created.creado_en,
+    updated_at: created.creado_en,
+    id_rol: null,
+  };
 }
 
 async function updateUser(id, payload) {
   const { firstname, lastname, email, password, id_rol, is_active } = payload;
   const data = {};
-  if (firstname !== undefined) data.firstname = firstname;
-  if (lastname !== undefined) data.lastname = lastname;
-  if (email !== undefined) data.email = email;
-  if (password !== undefined) data.password = await hashPassword(password);
-  if (id_rol !== undefined) data.id_rol = Number(id_rol);
-  if (is_active !== undefined) data.is_active = Boolean(is_active);
-  data.updated_at = new Date();
+  if (firstname !== undefined) data.nombre = firstname;
+  if (lastname !== undefined) data.apellido = lastname;
+  if (email !== undefined) data.correo = email;
+  if (password !== undefined) data.contrase_a_hash = await hashPassword(password);
+  if (is_active !== undefined) data.activo = Boolean(is_active);
 
-  return prisma.users.update({
-    where: { id_user: id },
+  const updated = await prisma.usuarios.update({
+    where: { usuario_id: Number(id) },
     data,
-    select: {
-      id_user: true,
-      firstname: true,
-      lastname: true,
-      email: true,
-      is_active: true,
-      created_at: true,
-      updated_at: true,
-      id_rol: true,
-    },
+    select: { usuario_id: true, nombre: true, apellido: true, correo: true, activo: true, creado_en: true },
   });
+  return {
+    id_user: updated.usuario_id,
+    firstname: updated.nombre,
+    lastname: updated.apellido,
+    email: updated.correo,
+    is_active: updated.activo,
+    created_at: updated.creado_en,
+    updated_at: updated.creado_en,
+    id_rol: null,
+  };
 }
 
 async function softDeleteUser(id) {
-  return prisma.users.update({
-    where: { id_user: id },
-    data: { is_active: false, updated_at: new Date() },
-    select: {
-      id_user: true,
-      firstname: true,
-      lastname: true,
-      email: true,
-      is_active: true,
-      created_at: true,
-      updated_at: true,
-      id_rol: true,
-    },
+  const u = await prisma.usuarios.update({
+    where: { usuario_id: Number(id) },
+    data: { activo: false },
+    select: { usuario_id: true, nombre: true, apellido: true, correo: true, activo: true, creado_en: true },
   });
+  return {
+    id_user: u.usuario_id,
+    firstname: u.nombre,
+    lastname: u.apellido,
+    email: u.correo,
+    is_active: u.activo,
+    created_at: u.creado_en,
+    updated_at: u.creado_en,
+    id_rol: null,
+  };
 }
 
 module.exports = {

@@ -12,25 +12,32 @@ module.exports = async function setUploadDir(req, res, next) {
     if (req.params && req.params.id) {
       const docId = Number(req.params.id);
       if (Number.isNaN(docId)) return res.status(400).json({ error: "ID inválido" });
-      const doc = await prisma.documents.findUnique({
-        where: { id_document: docId },
-        select: { id_user: true },
+      const doc = await prisma.documentos.findUnique({
+        where: { documento_id: docId },
+        select: { usuario_id: true },
       });
       if (!doc) return res.status(404).json({ error: "Documento no encontrado" });
-      req.uploadTargetDir = path.join(root, String(doc.id_user));
+      req.uploadTargetDir = path.join(root, String(doc.usuario_id));
       return next();
     }
 
-    // POST /documents -> requiere id_user en el body
-    const idUser = req.body && req.body.id_user !== undefined ? Number(req.body.id_user) : NaN;
+    // POST /documents -> usar body.usuario_id|id_user o fallback al usuario autenticado (req.user.sub|req.user.id)
+    let idUser = NaN;
+    if (req.body) {
+      if (req.body.usuario_id !== undefined) idUser = Number(req.body.usuario_id);
+      else if (req.body.id_user !== undefined) idUser = Number(req.body.id_user);
+    }
+    if (!Number.isFinite(idUser)) {
+      const maybeSub = req.user && req.user.sub !== undefined ? Number(req.user.sub) : NaN;
+      const maybeId = req.user && req.user.id !== undefined ? Number(req.user.id) : NaN;
+      if (Number.isFinite(maybeSub)) idUser = maybeSub;
+      else if (Number.isFinite(maybeId)) idUser = maybeId;
+    }
     if (!Number.isFinite(idUser)) {
       return res.status(400).json({ error: "id_user es requerido y debe ser numérico" });
     }
     // Validar que el usuario exista antes de permitir la subida
-    const user = await prisma.users.findUnique({
-      where: { id_user: idUser },
-      select: { id_user: true },
-    });
+    const user = await prisma.usuarios.findUnique({ where: { usuario_id: idUser }, select: { usuario_id: true } });
     if (!user) {
       return res.status(400).json({ error: "El id_user no existe" });
     }

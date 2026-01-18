@@ -1,5 +1,35 @@
 const prisma = require("../../prisma/client");
 
+async function getPeriodDateRange(academicPeriodId) {
+  const id = Number(academicPeriodId);
+  if (!Number.isFinite(id)) return null;
+  try {
+    const per = await prisma.periodos.findUnique({
+      where: { periodo_id: id },
+      select: { fecha_inicio: true, fecha_fin: true }
+    });
+    if (!per?.fecha_inicio || !per?.fecha_fin) return null;
+    const start = new Date(per.fecha_inicio);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(per.fecha_fin);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function getActiveAcademicPeriodId() {
+  try {
+    const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+    const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+    const id = Number(per?.id_academic_periods);
+    return Number.isFinite(id) ? id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function toInt(val, def) {
   const n = Number(val);
   return Number.isFinite(n) && n > 0 ? Math.trunc(n) : def;
@@ -7,7 +37,20 @@ function toInt(val, def) {
 
 function sanitizeDocType(val) {
   if (!val) return undefined;
-  const allowed = ["solicitud", "oficio", "informe_final", "acta", "otro"];
+  const allowed = [
+    "comprobante_certificados",
+    "comprobante_titulacion",
+    "comprobante_acta_grado",
+    "solicitud",
+    "oficio",
+    "uic_final",
+    "uic_acta_tribunal",
+    "cert_tesoreria",
+    "cert_secretaria",
+    "cert_vinculacion",
+    "cert_ingles",
+    "cert_practicas",
+  ];
   return allowed.includes(val) ? val : undefined;
 }
 
@@ -15,30 +58,70 @@ async function listDocuments(query) {
   const page = toInt(query.page, 1);
   const pageSize = toInt(query.pageSize, 20);
   const skip = (page - 1) * pageSize;
-  const doc_type = sanitizeDocType(query.doc_type);
-  const id_user = query.id_user !== undefined ? Number(query.id_user) : undefined;
+  const tipo = sanitizeDocType(query.tipo || query.doc_type || query.document_type);
+  const usuario_id = query.usuario_id !== undefined ? Number(query.usuario_id) : (query.id_owner !== undefined ? Number(query.id_owner) : (query.id_user !== undefined ? Number(query.id_user) : undefined));
+  const estudiante_id = query.estudiante_id !== undefined ? Number(query.estudiante_id) : undefined;
+  const category = (query.category || query.scope || '').toString().toLowerCase();
+  const overrideAp = query.academicPeriodId !== undefined ? Number(query.academicPeriodId) : (query.academic_period_id !== undefined ? Number(query.academic_period_id) : undefined);
+
+  // Categorías opcionales para filtrar: 'matricula' (excluir comprobantes), 'pagos' (solo comprobantes)
+  const tiposComprobantes = [
+    'comprobante_certificados',
+    'comprobante_titulacion',
+    'comprobante_acta_grado',
+  ];
+  const tiposMatricula = [
+    'solicitud', 'oficio', 'uic_final', 'uic_acta_tribunal',
+    'cert_tesoreria', 'cert_secretaria', 'cert_vinculacion', 'cert_ingles', 'cert_practicas',
+  ];
 
   const where = {
-    ...(doc_type ? { doc_type } : {}),
-    ...(Number.isFinite(id_user) ? { id_user } : {}),
+    ...(tipo ? { tipo } : {}),
+    ...(Number.isFinite(usuario_id) ? { usuario_id } : {}),
+    ...(Number.isFinite(estudiante_id) ? { estudiante_id } : {}),
   };
 
+  // Aplicar filtro por categoría si no se envió 'tipo' explícito
+  if (!tipo) {
+    if (category === 'matricula') {
+      where.tipo = { in: tiposMatricula };
+    } else if (category === 'pagos') {
+      where.tipo = { in: tiposComprobantes };
+    }
+  }
+
+  // Period-scoping by date range for period-sensitive categories.
+  // The documentos table does not have periodo_id, so we use creado_en within the active period range.
+  if ((category === 'matricula' || category === 'pagos') && !where.creado_en) {
+    const apId = Number.isFinite(Number(overrideAp)) ? Number(overrideAp) : await getActiveAcademicPeriodId();
+    if (Number.isFinite(Number(apId))) {
+      const range = await getPeriodDateRange(apId);
+      if (range?.start && range?.end) {
+        where.creado_en = { gte: range.start, lte: range.end };
+      }
+    }
+  }
+
   const [total, data] = await Promise.all([
-    prisma.documents.count({ where }),
-    prisma.documents.findMany({
+    prisma.documentos.count({ where }),
+    prisma.documentos.findMany({
       where,
-      orderBy: { id_document: "desc" },
+      orderBy: { documento_id: "desc" },
       skip,
       take: pageSize,
       select: {
-        id_document: true,
-        doc_type: true,
-        file_path: true,
-        upload_date: true,
-        id_user: true,
-        users: {
-          select: { id_user: true, firstname: true, lastname: true, email: true },
-        },
+        documento_id: true,
+        tipo: true,
+        estado: true,
+        ruta_archivo: true,
+        nombre_archivo: true,
+        mime_type: true,
+        pago_referencia: true,
+        pago_monto: true,
+        observacion: true,
+        creado_en: true,
+        usuario_id: true,
+        estudiante_id: true,
       },
     }),
   ]);
@@ -55,82 +138,138 @@ async function listDocuments(query) {
 }
 
 async function getDocumentById(id) {
-  return prisma.documents.findUnique({
-    where: { id_document: id },
+  return prisma.documentos.findUnique({
+    where: { documento_id: id },
     select: {
-      id_document: true,
-      doc_type: true,
-      file_path: true,
-      upload_date: true,
-      id_user: true,
-      users: { select: { id_user: true, firstname: true, lastname: true, email: true } },
+      documento_id: true,
+      tipo: true,
+      estado: true,
+      ruta_archivo: true,
+      nombre_archivo: true,
+      mime_type: true,
+      pago_referencia: true,
+      pago_monto: true,
+      observacion: true,
+      creado_en: true,
+      usuario_id: true,
+      estudiante_id: true,
     },
   });
 }
 
 async function createDocument(payload) {
-  const { doc_type, file_path, id_user, upload_date } = payload;
-  if (!doc_type || !file_path || typeof id_user !== "number") {
-    const err = new Error("Campos requeridos: doc_type, file_path, id_user (number)");
+  const { tipo, ruta_archivo, usuario_id, nombre_archivo, mime_type, pago_referencia, pago_monto, estudiante_id, observacion } = payload;
+  if (!tipo || !ruta_archivo || typeof usuario_id !== "number") {
+    const err = new Error("Campos requeridos: tipo, ruta_archivo, usuario_id (number)");
     err.status = 400;
     throw err;
   }
-  const sanitizedDocType = sanitizeDocType(doc_type);
+  const sanitizedDocType = sanitizeDocType(tipo);
   if (!sanitizedDocType) {
-    const err = new Error("doc_type inválido. Valores permitidos: solicitud, oficio, informe_final, acta, otro");
+    const err = new Error("tipo de documento inválido");
     err.status = 400;
     throw err;
   }
 
-  return prisma.documents.create({
+  return prisma.documentos.create({
     data: {
-      doc_type: sanitizedDocType,
-      file_path,
-      id_user,
-      ...(upload_date ? { upload_date: new Date(upload_date) } : {}),
+      tipo: sanitizedDocType,
+      ruta_archivo,
+      nombre_archivo: nombre_archivo ?? null,
+      mime_type: mime_type ?? null,
+      pago_referencia: pago_referencia ?? null,
+      pago_monto: pago_monto ?? null,
+      observacion: observacion ?? null,
+      usuario_id,
+      ...(Number.isFinite(estudiante_id) ? { estudiante_id } : {}),
     },
     select: {
-      id_document: true,
-      doc_type: true,
-      file_path: true,
-      upload_date: true,
-      id_user: true,
+      documento_id: true,
+      tipo: true,
+      estado: true,
+      ruta_archivo: true,
+      nombre_archivo: true,
+      mime_type: true,
+      pago_referencia: true,
+      pago_monto: true,
+      observacion: true,
+      creado_en: true,
+      usuario_id: true,
+      estudiante_id: true,
     },
   });
 }
 
 async function updateDocument(id, payload) {
   const data = {};
-  if (payload.doc_type !== undefined) {
-    const sanitizedDocType = sanitizeDocType(payload.doc_type);
+  if (payload.tipo !== undefined || payload.doc_type !== undefined || payload.document_type !== undefined) {
+    const sanitizedDocType = sanitizeDocType(payload.tipo || payload.document_type || payload.doc_type);
     if (!sanitizedDocType) {
-      const err = new Error("doc_type inválido. Valores permitidos: solicitud, oficio, informe_final, acta, otro");
+      const err = new Error("tipo de documento inválido");
       err.status = 400;
       throw err;
     }
-    data.doc_type = sanitizedDocType;
+    data.tipo = sanitizedDocType;
   }
-  if (payload.file_path !== undefined) data.file_path = payload.file_path;
-  if (payload.id_user !== undefined) data.id_user = Number(payload.id_user);
-  if (payload.upload_date !== undefined) data.upload_date = new Date(payload.upload_date);
+  if (payload.ruta_archivo !== undefined) data.ruta_archivo = payload.ruta_archivo;
+  if (payload.nombre_archivo !== undefined) data.nombre_archivo = payload.nombre_archivo;
+  if (payload.mime_type !== undefined) data.mime_type = payload.mime_type;
+  if (payload.pago_referencia !== undefined) data.pago_referencia = payload.pago_referencia;
+  if (payload.pago_monto !== undefined) data.pago_monto = Number(payload.pago_monto);
+  if (payload.usuario_id !== undefined || payload.id_owner !== undefined || payload.id_user !== undefined) data.usuario_id = Number(payload.usuario_id ?? payload.id_owner ?? payload.id_user);
+  if (payload.estudiante_id !== undefined) data.estudiante_id = Number(payload.estudiante_id);
+  if (payload.estado !== undefined || payload.status !== undefined) {
+    const st = String(payload.estado ?? payload.status);
+    if (!['en_revision','aprobado','rechazado'].includes(st)) {
+      const err = new Error("estado inválido");
+      err.status = 400;
+      throw err;
+    }
+    data.estado = st;
+  }
+  if (payload.observacion !== undefined || payload.observation !== undefined) {
+    const obs = payload.observacion ?? payload.observation;
+    data.observacion = (obs == null ? null : String(obs));
+  }
 
-  return prisma.documents.update({
-    where: { id_document: id },
+  return prisma.documentos.update({
+    where: { documento_id: id },
     data,
     select: {
-      id_document: true,
-      doc_type: true,
-      file_path: true,
-      upload_date: true,
-      id_user: true,
+      documento_id: true,
+      tipo: true,
+      estado: true,
+      ruta_archivo: true,
+      nombre_archivo: true,
+      mime_type: true,
+      pago_referencia: true,
+      pago_monto: true,
+      observacion: true,
+      creado_en: true,
+      usuario_id: true,
+      estudiante_id: true,
     },
   });
 }
 
+async function setStatus(id, estado, observacion) {
+  const st = String(estado);
+  if (!['en_revision','aprobado','rechazado'].includes(st)) {
+    const err = new Error('estado inválido');
+    err.status = 400;
+    throw err;
+  }
+  return prisma.documentos.update({
+    where: { documento_id: Number(id) },
+    data: { estado: st, ...(observacion ? { observacion: String(observacion) } : {}) },
+    select: { documento_id: true, estado: true }
+  });
+}
+
 async function deleteDocument(id) {
-  return prisma.documents.delete({
-    where: { id_document: id },
-    select: { id_document: true, file_path: true },
+  return prisma.documentos.delete({
+    where: { documento_id: id },
+    select: { documento_id: true, ruta_archivo: true },
   });
 }
 
@@ -140,4 +279,36 @@ module.exports = {
   createDocument,
   updateDocument,
   deleteDocument,
+  setStatus,
 };
+
+// Checklist por usuario/modadlidad (reglas simples; extender según necesidad)
+function getRequiredByModality(modality) {
+  const base = [
+    { key: 'solicitud', nombre: 'Solicitud' },
+    { key: 'oficio', nombre: 'Oficio' },
+    { key: 'informe_final', nombre: 'Informe final' },
+  ];
+  // Ejemplo: agregar requeridos por modalidad si aplica
+  if (modality === 'EXAMEN_COMPLEXIVO') {
+    return base;
+  }
+  return base;
+}
+
+async function getChecklist({ id_user, modality }) {
+  const rows = await prisma.documentos.findMany({
+    where: { usuario_id: Number(id_user) },
+    select: { tipo: true },
+  });
+  const presentes = new Set(rows.map(r => String(r.tipo || '').toLowerCase()));
+  const required = getRequiredByModality(modality);
+  const items = required.map(r => ({
+    key: r.key,
+    nombre: r.nombre,
+    estado: presentes.has(r.key) ? 'aprobado' : 'pendiente',
+  }));
+  return { userId: id_user, modality: modality || null, items };
+}
+
+module.exports.getChecklist = getChecklist;

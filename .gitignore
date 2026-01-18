@@ -24,6 +24,31 @@ yarn-error.log*
 /.cache
 /coverage
 
+# Archivos de sistema/IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.vs/
+
+# Credenciales/llaves y configuraciones locales
+*.pem
+*.key
+*.crt
+.npmrc
+.yarnrc
+
+# Dumps y backups temporales
+*.sql
+*.dump
+backup/
+tmp/
+
+# Plataformas de despliegue/caching adicionales
+.turbo/
+.vercel/
+.netlify/
+
 # Prisma
 /prisma/migrations/**/migration.sql
 /prisma/migrations/**/migration_lock.toml
@@ -101,3 +126,14 @@ Icon
 *.njsproj
 *.sln
 *.sw?
+
+# Carpeta scripts
+/scripts
+
+# test
+coverage/
+jest.config.js
+__tests__
+
+uploads/documents/
+uploads/vouchers/
