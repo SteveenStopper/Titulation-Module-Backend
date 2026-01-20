@@ -2,6 +2,14 @@ const express = require("express");
 const router = express.Router();
 const prisma = require("../../prisma/client");
 const authorize = require("../middlewares/authorize");
+const fs = require('fs');
+const path = require('path');
+
+function toAbsoluteUploadPath(relPath) {
+  if (!relPath) return null;
+  const cleaned = String(relPath).replace(/^[/\\]+/, "");
+  return path.join(process.cwd(), cleaned);
+}
 
 // GET /docente/dashboard
 router.get("/dashboard", authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
@@ -37,6 +45,77 @@ router.get("/dashboard", authorize('Docente','Administrador','Coordinador'), asy
     const tutoriasProximas = 0;
 
     res.json({ tutoriasProximas, revisionesPendientes, materiasACargo });
+  } catch (err) { next(err); }
+});
+
+// GET /docente/uic/informe/:estudianteId
+// Devuelve metadata del informe final (uic_final) del estudiante si existe y si el docente autenticado es su tutor en el período activo
+router.get('/uic/informe/:estudianteId', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+  try {
+    const me = req.user?.sub;
+    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const estudianteId = Number(req.params.estudianteId);
+    if (!Number.isFinite(estudianteId)) { const e=new Error('Parámetro inválido'); e.status=400; throw e; }
+
+    let id_ap = undefined;
+    try {
+      const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+      const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+      id_ap = per?.id_academic_periods;
+    } catch (_) {}
+    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+
+    const asign = await prisma.uic_asignaciones.findFirst({
+      where: { periodo_id: Number(id_ap), tutor_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
+      select: { uic_asignacion_id: true }
+    });
+    if (!asign) { const e=new Error('Estudiante no asignado a su tutoría'); e.status=404; throw e; }
+
+    const doc = await prisma.documentos.findFirst({
+      where: { usuario_id: Number(estudianteId), tipo: 'uic_final' },
+      orderBy: { creado_en: 'desc' },
+      select: { documento_id: true, nombre_archivo: true, mime_type: true, creado_en: true, estado: true }
+    });
+    if (!doc) return res.json({ documento_id: null });
+    res.json({ documento_id: Number(doc.documento_id), nombre_archivo: doc.nombre_archivo ?? null, mime_type: doc.mime_type ?? null, creado_en: doc.creado_en ?? null, estado: doc.estado ?? null });
+  } catch (err) { next(err); }
+});
+
+// GET /docente/uic/informe/:estudianteId/download
+// Descarga el PDF del informe final del estudiante si existe y si el docente autenticado es su tutor en el período activo
+router.get('/uic/informe/:estudianteId/download', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+  try {
+    const me = req.user?.sub;
+    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const estudianteId = Number(req.params.estudianteId);
+    if (!Number.isFinite(estudianteId)) { const e=new Error('Parámetro inválido'); e.status=400; throw e; }
+
+    let id_ap = undefined;
+    try {
+      const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+      const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+      id_ap = per?.id_academic_periods;
+    } catch (_) {}
+    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+
+    const asign = await prisma.uic_asignaciones.findFirst({
+      where: { periodo_id: Number(id_ap), tutor_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
+      select: { uic_asignacion_id: true }
+    });
+    if (!asign) { const e=new Error('Estudiante no asignado a su tutoría'); e.status=404; throw e; }
+
+    const doc = await prisma.documentos.findFirst({
+      where: { usuario_id: Number(estudianteId), tipo: 'uic_final' },
+      orderBy: { creado_en: 'desc' },
+      select: { documento_id: true, ruta_archivo: true, nombre_archivo: true, mime_type: true }
+    });
+    if (!doc || !doc.ruta_archivo) { const e=new Error('Documento no encontrado'); e.status=404; throw e; }
+
+    const abs = toAbsoluteUploadPath(doc.ruta_archivo);
+    if (!abs || !fs.existsSync(abs)) { const e=new Error('Archivo no encontrado'); e.status=404; throw e; }
+    res.setHeader('Content-Type', doc.mime_type || 'application/pdf');
+    const fname = doc.nombre_archivo || `uic_final_${Number(doc.documento_id)}`;
+    return res.download(abs, fname);
   } catch (err) { next(err); }
 });
 
