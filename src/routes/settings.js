@@ -6,6 +6,10 @@ const authorize = require("../middlewares/authorize");
 router.get("/settings/active-period", ctrl.getActivePeriod);
 router.put("/settings/active-period", ctrl.setActivePeriod);
 router.get("/settings/periods", ctrl.listPeriods);
+router.get("/settings/institute-periods", ctrl.listInstitutePeriods);
+
+// Alias para compatibilidad si el router de settings se monta en "/settings"
+router.get("/institute-periods", ctrl.listInstitutePeriods);
 router.post("/settings/periods", ctrl.createPeriod);
 // Editar/Cerrar periodos y limpiar activo
 router.put("/settings/periods/:id", authorize('Administrador','Coordinador'), ctrl.updatePeriod);

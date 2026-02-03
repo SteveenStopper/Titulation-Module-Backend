@@ -1,6 +1,11 @@
 const { z } = require("zod");
 const prisma = require("../../prisma/client");
 
+function safeIdent(name) {
+  const s = String(name || '').trim();
+  return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+}
+
 async function getActivePeriodId() {
   const setting = await prisma.app_settings.findUnique({ where: { setting_key: "active_period" } });
   if (!setting || !setting.setting_value) return null;
@@ -192,9 +197,9 @@ async function publish(req, res, next) {
         where: { periodo_id: Number(id_ap), carrera_id: Number(careerId), modalidad: 'EXAMEN_COMPLEXIVO' },
         select: { estudiante_id: true }
       });
-      const studentIds = Array.from(new Set(mods.map(m => Number(m.estudiante_id)).filter(n => Number.isFinite(n) && n > 0)));
-      if (studentIds.length) {
-        await notifications.createManyUsers({ userIds: studentIds, type: 'complexivo_publicado', title: 'Materias de Complexivo publicadas', message: 'Revisa las materias y docentes asignados para tu carrera', entity_type: 'complexivo', entity_id: 0 });
+      const estIds = Array.from(new Set(mods.map(m => Number(m.estudiante_id)).filter(n => Number.isFinite(n) && n > 0)));
+      if (estIds.length > 0) {
+        await notifications.createManyUsers({ userIds: estIds, type: 'complexivo_publicado', title: 'Materias publicadas (Complexivo)', message: `Se publicaron ${count} materias en tu carrera`, entity_type: 'complexivo', entity_id: 0 });
       }
     } catch (_) {}
     res.json({ ok: true, published: count });
@@ -254,18 +259,170 @@ async function listMateriasCatalogo(req, res, next) {
   try {
     const schema = z.object({ careerId: z.coerce.number().int() });
     const { careerId } = schema.parse(req.query || {});
-    const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+    const rawSchema = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+    const EXT_SCHEMA = safeIdent(rawSchema) || 'tecnologicolosan_sigala2';
+
+    const pickColumnsFromTable = async (tableName) => {
+      const t = safeIdent(tableName);
+      if (!t) return null;
+      const cols = await prisma.$queryRawUnsafe(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = ?
+           AND table_name = ?`,
+        EXT_SCHEMA,
+        t
+      );
+      const list = Array.isArray(cols) ? cols.map(r => safeIdent(r?.column_name)).filter(Boolean) : [];
+      if (!list.length) return null;
+      const upper = list.map(x => String(x).toUpperCase());
+      const nameCol = list.find((c, i) => upper[i].includes('NOMBRE'));
+      const careerCol = list.find((c, i) => upper[i].includes('CARRERA') && upper[i].includes('ID'));
+      const idCol = list.find((c, i) => upper[i].startsWith('ID_') && (upper[i].includes('ASIGN') || upper[i].includes('ASIG') || upper[i].includes('MATER')));
+      if (nameCol && careerCol && idCol) return { table: t, idCol, nameCol, careerCol };
+      return null;
+    };
+
+    const pickBestTable = async () => {
+      const cols = await prisma.$queryRawUnsafe(
+        `SELECT table_name, column_name
+         FROM information_schema.columns
+         WHERE table_schema = ?
+           AND (
+             table_name LIKE '%MATER%'
+             OR table_name LIKE '%ASIG%'
+             OR table_name LIKE '%ASIGN%'
+           )`,
+        EXT_SCHEMA
+      );
+      const list = Array.isArray(cols) ? cols : [];
+      const byTable = new Map();
+      for (const r of list) {
+        const t = safeIdent(r?.table_name);
+        const c = safeIdent(r?.column_name);
+        if (!t || !c) continue;
+        const arr = byTable.get(t) || [];
+        arr.push(c);
+        byTable.set(t, arr);
+      }
+      for (const [table, columns] of byTable.entries()) {
+        const upper = columns.map(x => String(x).toUpperCase());
+        const nameCol = columns.find((c, i) => upper[i].includes('NOMBRE'));
+        const careerCol = columns.find((c, i) => upper[i].includes('CARRERA') && upper[i].includes('ID'));
+        const idCol = columns.find((c, i) => upper[i].startsWith('ID_') && (upper[i].includes('MATER') || upper[i].includes('ASIG') || upper[i].includes('ASIGN')));
+        if (nameCol && careerCol && idCol) return { table, idCol, nameCol, careerCol };
+      }
+      return null;
+    };
+
+    let data = [];
+
+    // 1) Fuente preferida confirmada: NOTAS_ASIGNATURAS (asignaturas reales por carrera)
+    try {
+      const t = await pickColumnsFromTable('NOTAS_ASIGNATURAS');
+      if (t) {
+        const sql = `SELECT DISTINCT ${t.idCol} AS id, ${t.nameCol} AS nombre
+                     FROM ${EXT_SCHEMA}.${t.table}
+                     WHERE ${t.careerCol} = ?`;
+        const rows = await prisma.$queryRawUnsafe(sql, Number(careerId));
+        data = Array.isArray(rows) ? rows.map(r => ({ id: Number(r.id), nombre: String(r.nombre) })) : [];
+      }
+    } catch (_) {
+      data = [];
+    }
+
+    // 2) Heurística: buscar tablas tipo ASIGN/MATER por si el nombre no coincide
+    if (!data.length) {
+      try {
+        const t = await pickBestTable();
+        if (t) {
+          const sql = `SELECT DISTINCT \
+              ${t.idCol} AS id, \
+              ${t.nameCol} AS nombre \
+            FROM ${EXT_SCHEMA}.${t.table} \
+            WHERE ${t.careerCol} = ?`;
+          const rows = await prisma.$queryRawUnsafe(sql, Number(careerId));
+          data = Array.isArray(rows) ? rows.map(r => ({ id: Number(r.id), nombre: String(r.nombre) })) : [];
+        }
+      } catch (_) {
+        data = [];
+      }
+    }
+
+    if (!data.length) {
+      const sql = `SELECT DISTINCT C.ID_CURSOS AS id, C.NOMBRE_CURSOS AS nombre
+                   FROM ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS FC
+                   JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS C ON C.ID_CURSOS = FC.ID_CURSOS_FORMAR_CURSOS
+                   WHERE FC.ID_CARRERA_FORMAR_CURSOS = ${Number(careerId)} AND (C.STATUS_CURSOS = 'ACTIVO' OR C.STATUS_CURSOS IS NULL)`;
+      const rows = await prisma.$queryRawUnsafe(sql);
+      data = Array.isArray(rows) ? rows.map(r => ({ id: Number(r.id), nombre: String(r.nombre) })) : [];
+    }
+
+    res.json((data || []).filter(x => Number.isFinite(Number(x.id))).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))));
+  } catch (e) { if (e.name==='ZodError'){ e.status=400; e.message=e.errors.map(x=>x.message).join(', ');} next(e); }
+}
+
+module.exports.listMateriasCatalogo = listMateriasCatalogo;
+
+async function listSemestresCatalogo(req, res, next) {
+  try {
+    const schema = z.object({ careerId: z.coerce.number().int() });
+    const { careerId } = schema.parse(req.query || {});
+    const rawSchema = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+    const EXT_SCHEMA = safeIdent(rawSchema) || 'tecnologicolosan_sigala2';
+
     const sql = `SELECT DISTINCT C.ID_CURSOS AS id, C.NOMBRE_CURSOS AS nombre
                  FROM ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS FC
                  JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS C ON C.ID_CURSOS = FC.ID_CURSOS_FORMAR_CURSOS
                  WHERE FC.ID_CARRERA_FORMAR_CURSOS = ${Number(careerId)} AND (C.STATUS_CURSOS = 'ACTIVO' OR C.STATUS_CURSOS IS NULL)`;
     const rows = await prisma.$queryRawUnsafe(sql);
     const data = Array.isArray(rows) ? rows.map(r => ({ id: Number(r.id), nombre: String(r.nombre) })) : [];
-    res.json(data.sort((a,b)=> a.nombre.localeCompare(b.nombre)));
-  } catch (e) { if (e.name==='ZodError'){ e.status=400; e.message=e.errors.map(x=>x.message).join(', ');} next(e); }
+    res.json((data || []).filter(x => Number.isFinite(Number(x.id))).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))));
+  } catch (e) {
+    if (e.name === 'ZodError') { e.status = 400; e.message = e.errors.map(x => x.message).join(', '); }
+    next(e);
+  }
 }
 
-module.exports.listMateriasCatalogo = listMateriasCatalogo;
+module.exports.listSemestresCatalogo = listSemestresCatalogo;
+
+async function listAsignaturasCatalogo(req, res, next) {
+  try {
+    const schema = z.object({
+      careerId: z.coerce.number().int(),
+      semesterId: z.coerce.number().int().optional(),
+    });
+    const { careerId, semesterId } = schema.parse(req.query || {});
+    const rawSchema = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+    const EXT_SCHEMA = safeIdent(rawSchema) || 'tecnologicolosan_sigala2';
+
+    // Según tu BD: NOTAS_ASIGNATURA tiene ID_FORMAR_CURSOS_ASIGNATURA que conecta con MATRICULACION_FORMAR_CURSOS
+    // MATRICULACION_FORMAR_CURSOS conecta carrera (ID_CARRERA_FORMAR_CURSOS) y curso/semestre (ID_CURSOS_FORMAR_CURSOS)
+    let sql = `SELECT DISTINCT
+        A.ID_ASIGNATURA AS id,
+        A.NOMBRE_ASIGNATURA AS nombre
+      FROM ${EXT_SCHEMA}.NOTAS_ASIGNATURA A
+      JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS FC
+        ON FC.ID_FORMAR_CURSOS = A.ID_FORMAR_CURSOS_ASIGNATURA
+      WHERE FC.ID_CARRERA_FORMAR_CURSOS = ?
+        AND (A.STATUS_ASIGNATURA = 'ACTIVO' OR A.STATUS_ASIGNATURA IS NULL)`;
+    const params = [Number(careerId)];
+
+    if (Number.isFinite(Number(semesterId))) {
+      sql += ` AND FC.ID_CURSOS_FORMAR_CURSOS = ?`;
+      params.push(Number(semesterId));
+    }
+
+    const rows = await prisma.$queryRawUnsafe(sql, ...params);
+    const data = Array.isArray(rows) ? rows.map(r => ({ id: Number(r.id), nombre: String(r.nombre) })) : [];
+    res.json((data || []).filter(x => Number.isFinite(Number(x.id))).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))));
+  } catch (e) {
+    if (e.name === 'ZodError') { e.status = 400; e.message = e.errors.map(x => x.message).join(', '); }
+    next(e);
+  }
+}
+
+module.exports.listAsignaturasCatalogo = listAsignaturasCatalogo;
 
 // ====== Reportes (Vicerrectorado) ======
 async function reportResumen(req, res, next) {

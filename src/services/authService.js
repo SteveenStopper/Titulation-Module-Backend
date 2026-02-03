@@ -51,18 +51,6 @@ async function ensureLocalUserForInstituteUser({ institutoId, correo, nombres, a
     } catch (_) {}
   }
 
-  // 2) Asegurar rol asignado (Docente/Estudiante/etc) para permisos
-  if (roleName) {
-    try {
-      const rol = await prisma.roles.findUnique({ where: { nombre: String(roleName) }, select: { rol_id: true } });
-      if (rol?.rol_id) {
-        await prisma.usuario_roles.create({ data: { usuario_id: Number(institutoId), rol_id: Number(rol.rol_id) } });
-      }
-    } catch (_) {
-      // ignorar si ya existe o si el rol no está configurado
-    }
-  }
-
   return local;
 }
 
@@ -70,13 +58,18 @@ function mapPerfilIdToRoleName(id) {
   const map = new Map([
     [1, 'Coordinador'],
     [10, 'Tesoreria'],
-    [11, 'Secretaria'],
+    [21, 'Secretaria'],
     [14, 'Estudiante'],
     [15, 'Docente'],
-    [17, 'Coordinador'], // perfil alterno
+    [22, 'Coordinador'], // perfil alterno
     [18, 'Vicerrector'],
   ]);
   return map.get(Number(id)) || null;
+}
+
+function safeSchemaName(schema) {
+  const s = String(schema || '').trim();
+  return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
 }
 
 async function login(email, secret) {
@@ -114,12 +107,15 @@ async function login(email, secret) {
 
   // Si no autenticó por local, intentar como Instituto (email + cedula)
   if (!baseUser) {
-    const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+    const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
     // Solo lectura al esquema del instituto
-    const emailEsc = String(email).replace(/'/g, "''");
-    const cedulaEsc = String(secret).replace(/'/g, "''");
-    const sql = `SELECT ID_USUARIOS AS id, CORREO_USUARIOS AS correo, DOCUMENTO_USUARIOS AS cedula, ID_PERFILES_USUARIOS AS perfil, NOMBRES_USUARIOS AS nombres, APELLIDOS_USUARIOS AS apellidos FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS WHERE CORREO_USUARIOS='${emailEsc}' AND DOCUMENTO_USUARIOS='${cedulaEsc}' AND (STATUS_USUARIOS='ACTIVO' OR STATUS_USUARIOS IS NULL)`;
-    const rows = await prisma.$queryRawUnsafe(sql);
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT ID_USUARIOS AS id, CORREO_USUARIOS AS correo, DOCUMENTO_USUARIOS AS cedula, ID_PERFILES_USUARIOS AS perfil, NOMBRES_USUARIOS AS nombres, APELLIDOS_USUARIOS AS apellidos
+       FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS
+       WHERE CORREO_USUARIOS = ? AND DOCUMENTO_USUARIOS = ? AND STATUS_USUARIOS = 'ACTIVO'`,
+      String(email),
+      String(secret),
+    );
     const u = Array.isArray(rows) && rows[0] ? rows[0] : null;
     if (!u) {
       const err = new Error("Credenciales inválidas");

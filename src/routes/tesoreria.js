@@ -30,32 +30,32 @@ async function getPeriodDateRange(academicPeriodId) {
 }
 
 // GET /tesoreria/resumen?page=&pageSize=&minSem=
-router.get("/resumen", authorize('Tesoreria','Administrador','Secretaria'), listResumen);
+router.get("/resumen", authorize('Tesoreria', 'Administrador', 'Secretaria'), listResumen);
 
 // PUT /tesoreria/validaciones/approve
-router.put("/validaciones/approve", authorize('Tesoreria','Administrador'), approve);
+router.put("/validaciones/approve", authorize('Tesoreria', 'Administrador'), approve);
 
 // PUT /tesoreria/validaciones/reject
-router.put("/validaciones/reject", authorize('Tesoreria','Administrador'), reject);
+router.put("/validaciones/reject", authorize('Tesoreria', 'Administrador'), reject);
 
 // PUT /tesoreria/validaciones/reconsider
-router.put("/validaciones/reconsider", authorize('Tesoreria','Administrador'), reconsider);
+router.put("/validaciones/reconsider", authorize('Tesoreria', 'Administrador'), reconsider);
 
 // POST /tesoreria/certificados
-router.post("/certificados", authorize('Tesoreria','Administrador'), generateCertificate);
+router.post("/certificados", authorize('Tesoreria', 'Administrador'), generateCertificate);
 
 // GET /tesoreria/certificados/:docId/download
-router.get("/certificados/:docId/download", authorize('Tesoreria','Administrador','Secretaria'), downloadCertificateByDoc);
+router.get("/certificados/:docId/download", authorize('Tesoreria', 'Administrador', 'Secretaria'), downloadCertificateByDoc);
 
 // GET /tesoreria/certificados/by-student/:estudiante_id
-router.get("/certificados/by-student/:estudiante_id", authorize('Tesoreria','Administrador','Secretaria'), downloadCertificateByStudent);
+router.get("/certificados/by-student/:estudiante_id", authorize('Tesoreria', 'Administrador', 'Secretaria'), downloadCertificateByStudent);
 
 // GET /tesoreria/dashboard
-router.get("/dashboard", authorize('Tesoreria','Administrador'), async (req, res, next) => {
+router.get("/dashboard", authorize('Tesoreria', 'Administrador'), async (req, res, next) => {
   try {
-    const start = new Date(); start.setHours(0,0,0,0);
+    const start = new Date(); start.setHours(0, 0, 0, 0);
     // pagosHoy: # de comprobantes subidos hoy (cualquier tipo comprobante_*)
-    const tipos = ['comprobante_certificados','comprobante_titulacion','comprobante_acta_grado'];
+    const tipos = ['comprobante_certificados', 'comprobante_titulacion', 'comprobante_acta_grado'];
 
     // período activo para scoping
     const apId = await getActiveAcademicPeriodId();
@@ -65,6 +65,7 @@ router.get("/dashboard", authorize('Tesoreria','Administrador'), async (req, res
     const pagosHoy = await prisma.documentos.count({
       where: {
         tipo: { in: tipos },
+        estado: 'aprobado',
         ...(periodWhere ? { creado_en: { gte: start, lte: periodWhere.lte } } : { creado_en: { gte: start } })
       }
     });
@@ -74,6 +75,7 @@ router.get("/dashboard", authorize('Tesoreria','Administrador'), async (req, res
       by: ['tipo'],
       where: {
         tipo: { in: tipos },
+        estado: 'aprobado',
         ...(periodWhere ? { creado_en: periodWhere } : {})
       },
       _sum: { pago_monto: true }

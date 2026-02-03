@@ -5,31 +5,84 @@ const authorize = require("../middlewares/authorize");
 const fs = require('fs');
 const path = require('path');
 
+function getEffectiveDocenteId(req) {
+  const me = req.user?.sub;
+  const roles = Array.isArray(req.user?.roles)
+    ? req.user.roles.map(String)
+    : (req.user?.role ? [String(req.user.role)] : []);
+  const isAdmin = roles.includes('Administrador') || roles.includes('Admin') || roles.includes('ADMIN');
+  const asDocenteId = req.query?.asDocenteId != null ? Number(req.query.asDocenteId) : NaN;
+  if (isAdmin && Number.isFinite(asDocenteId)) return asDocenteId;
+  return me;
+}
+
 function toAbsoluteUploadPath(relPath) {
   if (!relPath) return null;
   const cleaned = String(relPath).replace(/^[/\\]+/, "");
   return path.join(process.cwd(), cleaned);
 }
 
-// GET /docente/dashboard
-router.get("/dashboard", authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+// GET /docente/admin/docentes
+// Lista docentes desde la BD local (usuarios con rol Docente). Solo Administrador.
+router.get('/admin/docentes', authorize('Administrador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+    try {
+      const inst = await prisma.$queryRawUnsafe(`
+        SELECT
+          ID_USUARIOS AS id,
+          NOMBRES_USUARIOS AS nombres,
+          APELLIDOS_USUARIOS AS apellidos,
+          CORREO_USUARIOS AS correo
+        FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS
+        WHERE (STATUS_USUARIOS='ACTIVO' OR STATUS_USUARIOS IS NULL)
+          AND ID_PERFILES_USUARIOS = 15
+        ORDER BY APELLIDOS_USUARIOS ASC, NOMBRES_USUARIOS ASC
+      `);
+
+      const list = Array.isArray(inst) ? inst : [];
+      if (!list.length) throw new Error('No docentes from institute');
+      const data = list
+        .map(r => ({
+          id_user: Number(r.id),
+          fullname: `${String(r.nombres || '')} ${String(r.apellidos || '')}`.trim(),
+          email: r.correo != null ? String(r.correo) : null,
+        }))
+        .filter(x => Number.isFinite(Number(x.id_user)));
+      return res.json(data);
+    } catch (_) {
+      const rows = await prisma.usuarios.findMany({
+        where: { activo: true, usuario_roles: { some: { roles: { nombre: 'Docente' } } } },
+        select: { usuario_id: true, nombre: true, apellido: true, correo: true },
+        orderBy: [{ apellido: 'asc' }, { nombre: 'asc' }]
+      });
+      const data = (rows || [])
+        .map(r => ({ id_user: Number(r.usuario_id), fullname: `${r.nombre} ${r.apellido}`.trim(), email: r.correo || null }))
+        .filter(x => Number.isFinite(Number(x.id_user)));
+      return res.json(data);
+    }
+  } catch (err) { next(err); }
+});
+
+// GET /docente/dashboard
+router.get("/dashboard", authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
+  try {
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     // Obtener período activo
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
+    } catch (_) { }
 
     // Materias a cargo (Complexivo) en período activo si existe
     let materiasACargo = 0;
     try {
       const where = { docente_usuario_id: Number(me), ...(Number.isFinite(Number(id_ap)) ? { periodo_id: Number(id_ap) } : {}) };
       materiasACargo = await prisma.complexivo_materias.count({ where });
-    } catch (_) {}
+    } catch (_) { }
 
     // Revisiones pendientes: contar uic_topics donde soy tutor en período activo
     let revisionesPendientes = 0;
@@ -39,7 +92,7 @@ router.get("/dashboard", authorize('Docente','Administrador','Coordinador'), asy
       } else {
         revisionesPendientes = await prisma.uic_topics.count({ where: { id_tutor: Number(me) } });
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // Tutorías próximas: placeholder 0 (no hay agenda en el esquema)
     const tutoriasProximas = 0;
@@ -50,26 +103,26 @@ router.get("/dashboard", authorize('Docente','Administrador','Coordinador'), asy
 
 // GET /docente/uic/informe/:estudianteId
 // Devuelve metadata del informe final (uic_final) del estudiante si existe y si el docente autenticado es su tutor en el período activo
-router.get('/uic/informe/:estudianteId', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/uic/informe/:estudianteId', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const estudianteId = Number(req.params.estudianteId);
-    if (!Number.isFinite(estudianteId)) { const e=new Error('Parámetro inválido'); e.status=400; throw e; }
+    if (!Number.isFinite(estudianteId)) { const e = new Error('Parámetro inválido'); e.status = 400; throw e; }
 
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
-    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+    } catch (_) { }
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
 
     const asign = await prisma.uic_asignaciones.findFirst({
       where: { periodo_id: Number(id_ap), tutor_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
       select: { uic_asignacion_id: true }
     });
-    if (!asign) { const e=new Error('Estudiante no asignado a su tutoría'); e.status=404; throw e; }
+    if (!asign) { const e = new Error('Estudiante no asignado a su tutoría'); e.status = 404; throw e; }
 
     const doc = await prisma.documentos.findFirst({
       where: { usuario_id: Number(estudianteId), tipo: 'uic_final' },
@@ -83,36 +136,36 @@ router.get('/uic/informe/:estudianteId', authorize('Docente','Administrador','Co
 
 // GET /docente/uic/informe/:estudianteId/download
 // Descarga el PDF del informe final del estudiante si existe y si el docente autenticado es su tutor en el período activo
-router.get('/uic/informe/:estudianteId/download', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/uic/informe/:estudianteId/download', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const estudianteId = Number(req.params.estudianteId);
-    if (!Number.isFinite(estudianteId)) { const e=new Error('Parámetro inválido'); e.status=400; throw e; }
+    if (!Number.isFinite(estudianteId)) { const e = new Error('Parámetro inválido'); e.status = 400; throw e; }
 
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
-    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+    } catch (_) { }
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
 
     const asign = await prisma.uic_asignaciones.findFirst({
       where: { periodo_id: Number(id_ap), tutor_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
       select: { uic_asignacion_id: true }
     });
-    if (!asign) { const e=new Error('Estudiante no asignado a su tutoría'); e.status=404; throw e; }
+    if (!asign) { const e = new Error('Estudiante no asignado a su tutoría'); e.status = 404; throw e; }
 
     const doc = await prisma.documentos.findFirst({
       where: { usuario_id: Number(estudianteId), tipo: 'uic_final' },
       orderBy: { creado_en: 'desc' },
       select: { documento_id: true, ruta_archivo: true, nombre_archivo: true, mime_type: true }
     });
-    if (!doc || !doc.ruta_archivo) { const e=new Error('Documento no encontrado'); e.status=404; throw e; }
+    if (!doc || !doc.ruta_archivo) { const e = new Error('Documento no encontrado'); e.status = 404; throw e; }
 
     const abs = toAbsoluteUploadPath(doc.ruta_archivo);
-    if (!abs || !fs.existsSync(abs)) { const e=new Error('Archivo no encontrado'); e.status=404; throw e; }
+    if (!abs || !fs.existsSync(abs)) { const e = new Error('Archivo no encontrado'); e.status = 404; throw e; }
     res.setHeader('Content-Type', doc.mime_type || 'application/pdf');
     const fname = doc.nombre_archivo || `uic_final_${Number(doc.documento_id)}`;
     return res.download(abs, fname);
@@ -121,10 +174,10 @@ router.get('/uic/informe/:estudianteId/download', authorize('Docente','Administr
 
 // GET /docente/tribunal-evaluador/estudiantes
 // Lista estudiantes (y carrera) donde soy miembro del Tribunal Evaluador en el período activo, incluyendo mi rol
-router.get('/tribunal-evaluador/estudiantes', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/tribunal-evaluador/estudiantes', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
 
     // período activo
     let id_ap = undefined;
@@ -132,7 +185,7 @@ router.get('/tribunal-evaluador/estudiantes', authorize('Docente','Administrador
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
+    } catch (_) { }
     if (!Number.isFinite(Number(id_ap))) return res.json([]);
 
     // Asignaciones guardadas por Coordinador (tabla tribunal_assignments)
@@ -196,7 +249,7 @@ router.get('/tribunal-evaluador/estudiantes', authorize('Docente','Administrador
           rol: roleOf(a)
         };
       })
-      .sort((a,b)=> a.nombre.localeCompare(b.nombre));
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
     res.json(data);
   } catch (err) { next(err); }
@@ -206,10 +259,10 @@ router.get('/tribunal-evaluador/estudiantes', authorize('Docente','Administrador
 
 // GET /docente/veedor/estudiantes
 // Devuelve SOLO los nombres de las carreras donde estoy asignado como Veedor en el período activo
-router.get('/veedor/estudiantes', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/veedor/estudiantes', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
 
     // período activo
     let id_ap = undefined;
@@ -217,7 +270,7 @@ router.get('/veedor/estudiantes', authorize('Docente','Administrador','Coordinad
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
+    } catch (_) { }
     if (!Number.isFinite(Number(id_ap))) return res.json([]);
 
     // Asignaciones guardadas por Coordinador (tabla veedor_assignments)
@@ -249,16 +302,16 @@ router.get('/veedor/estudiantes', authorize('Docente','Administrador','Coordinad
 });
 
 // GET /docente/uic/estudiantes - estudiantes UIC asignados a mi tutoría en el período activo
-router.get("/uic/estudiantes", authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get("/uic/estudiantes", authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
+    } catch (_) { }
     if (!Number.isFinite(Number(id_ap))) return res.json([]);
 
     const asigns = await prisma.uic_asignaciones.findMany({
@@ -274,24 +327,24 @@ router.get("/uic/estudiantes", authorize('Docente','Administrador','Coordinador'
     });
     const data = usuarios
       .map(u => ({ id: String(u.usuario_id), nombre: `${u.nombre} ${u.apellido}`.trim() }))
-      .sort((a,b)=> a.nombre.localeCompare(b.nombre));
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
     res.json(data);
   } catch (err) { next(err); }
 });
 
 // GET /docente/uic/avances?estudianteId=ID
 // Devuelve notas por parcial (1..3) del estudiante asignado al tutor en el período activo
-router.get("/uic/avances", authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get("/uic/avances", authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const estudianteId = req.query?.estudianteId ? Number(req.query.estudianteId) : undefined;
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
+    } catch (_) { }
     if (!Number.isFinite(Number(id_ap))) return res.json(estudianteId ? { alumnoId: String(estudianteId), p1: null, p2: null, p3: null } : []);
 
     const asign = await prisma.uic_asignaciones.findFirst({
@@ -329,27 +382,27 @@ router.get("/uic/avances", authorize('Docente','Administrador','Coordinador'), a
 
 // PUT /docente/uic/avances/:estudianteId/:parcial
 // Body: { nota: number|null, observacion?: string }
-router.put("/uic/avances/:estudianteId/:parcial", authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.put("/uic/avances/:estudianteId/:parcial", authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const estudianteId = Number(req.params.estudianteId);
     const parcialNum = Number(req.params.parcial);
-    if (!Number.isFinite(estudianteId) || ![1,2,3].includes(parcialNum)) { const e=new Error('Parámetros inválidos'); e.status=400; throw e; }
+    if (!Number.isFinite(estudianteId) || ![1, 2, 3].includes(parcialNum)) { const e = new Error('Parámetros inválidos'); e.status = 400; throw e; }
     const { nota, observacion } = req.body || {};
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
-    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+    } catch (_) { }
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
 
     const asign = await prisma.uic_asignaciones.findFirst({
       where: { periodo_id: Number(id_ap), tutor_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
       select: { uic_asignacion_id: true }
     });
-    if (!asign) { const e=new Error('Estudiante no asignado a su tutoría'); e.status=404; throw e; }
+    if (!asign) { const e = new Error('Estudiante no asignado a su tutoría'); e.status = 404; throw e; }
 
     // Upsert nota
     const existing = await prisma.uic_tutor_notas.findUnique({
@@ -372,13 +425,13 @@ router.put("/uic/avances/:estudianteId/:parcial", authorize('Docente','Administr
 
 // POST /docente/uic/avances/:estudianteId/:parcial/publicar
 // Envía una notificación al estudiante indicando que se publicó la calificación del parcial
-router.post("/uic/avances/:estudianteId/:parcial/publicar", authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.post("/uic/avances/:estudianteId/:parcial/publicar", authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const estudianteId = Number(req.params.estudianteId);
     const parcialNum = Number(req.params.parcial);
-    if (!Number.isFinite(estudianteId) || ![1,2,3].includes(parcialNum)) { const e=new Error('Parámetros inválidos'); e.status=400; throw e; }
+    if (!Number.isFinite(estudianteId) || ![1, 2, 3].includes(parcialNum)) { const e = new Error('Parámetros inválidos'); e.status = 400; throw e; }
 
     // periodo activo
     let id_ap = undefined;
@@ -386,15 +439,15 @@ router.post("/uic/avances/:estudianteId/:parcial/publicar", authorize('Docente',
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
-    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+    } catch (_) { }
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
 
     // verificar asignación
     const asign = await prisma.uic_asignaciones.findFirst({
       where: { periodo_id: Number(id_ap), tutor_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
       select: { uic_asignacion_id: true }
     });
-    if (!asign) { const e=new Error('Estudiante no asignado a su tutoría'); e.status=404; throw e; }
+    if (!asign) { const e = new Error('Estudiante no asignado a su tutoría'); e.status = 404; throw e; }
 
     // obtener nota actual (si existe)
     const nota = await prisma.uic_tutor_notas.findUnique({
@@ -413,7 +466,7 @@ router.post("/uic/avances/:estudianteId/:parcial/publicar", authorize('Docente',
         entity_type: 'uic_tutor_parcial',
         entity_id: Number(asign.uic_asignacion_id),
       });
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -422,37 +475,57 @@ router.post("/uic/avances/:estudianteId/:parcial/publicar", authorize('Docente',
 // =============== Docente Complexivo ===============
 
 // GET /docente/complexivo/mis-materias
-router.get('/complexivo/mis-materias', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/complexivo/mis-materias', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     // período activo opcional (si existe, filtramos)
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
+    } catch (_) { }
     const where = { docente_usuario_id: Number(me), ...(Number.isFinite(Number(id_ap)) ? { periodo_id: Number(id_ap) } : {}) };
     const rows = await prisma.complexivo_materias.findMany({
       where,
-      select: { complexivo_materia_id: true, nombre: true, codigo: true, periodo_id: true }
+      select: { complexivo_materia_id: true, nombre: true, codigo: true, periodo_id: true, carrera_id: true }
     });
-    const periodos = await prisma.periodos.findMany({ where: { periodo_id: { in: rows.map(r=>r.periodo_id) } }, select: { periodo_id: true, nombre: true } });
+    const periodos = await prisma.periodos.findMany({ where: { periodo_id: { in: rows.map(r => r.periodo_id) } }, select: { periodo_id: true, nombre: true } });
     const periodName = new Map(periodos.map(p => [p.periodo_id, p.nombre]));
+
+    // Mapear nombres de carrera desde Instituto
+    let careerNameMap = {};
+    try {
+      const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+      const careerIds = Array.from(new Set(rows.map(r => Number(r.carrera_id)).filter(n => Number.isFinite(n) && n > 0)));
+      if (careerIds.length) {
+        const inList = careerIds.join(',');
+        const list = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`);
+        if (Array.isArray(list)) {
+          for (const r of list) careerNameMap[Number(r.id)] = String(r.nombre);
+        }
+      }
+    } catch (_) { careerNameMap = {}; }
     const data = [];
     for (const r of rows) {
-      // contar estudiantes asignados por historial de asistencia (aprox.)
-      const count = await prisma.complexivo_asistencias.findMany({
-        where: { materia_id: Number(r.complexivo_materia_id) },
-        select: { estudiante_id: true }
-      });
-      const estudiantesAsignados = new Set(count.map(c => c.estudiante_id)).size;
+      // contar estudiantes por modalidad (EXAMEN_COMPLEXIVO) y carrera en el período
+      let estudiantesAsignados = 0;
+      try {
+        estudiantesAsignados = await prisma.modalidades_elegidas.count({
+          where: {
+            periodo_id: Number(r.periodo_id),
+            modalidad: 'EXAMEN_COMPLEXIVO',
+            ...(Number.isFinite(Number(r.carrera_id)) ? { carrera_id: Number(r.carrera_id) } : {}),
+          }
+        });
+      } catch (_) { estudiantesAsignados = 0; }
       data.push({
         id: String(r.complexivo_materia_id),
         nombre: r.nombre,
         codigo: r.codigo,
         periodo: periodName.get(r.periodo_id) || '',
+        carrera: careerNameMap[Number(r.carrera_id)] || null,
         estudiantesAsignados,
         publicado: true,
         asignadoADocente: true,
@@ -463,49 +536,57 @@ router.get('/complexivo/mis-materias', authorize('Docente','Administrador','Coor
 });
 
 // GET /docente/complexivo/materias/:materiaId/estudiantes
-router.get('/complexivo/materias/:materiaId/estudiantes', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/complexivo/materias/:materiaId/estudiantes', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const materiaId = Number(req.params.materiaId);
-    if (!Number.isFinite(materiaId)) { const e=new Error('Parámetro inválido'); e.status=400; throw e; }
-    const mat = await prisma.complexivo_materias.findUnique({ where: { complexivo_materia_id: materiaId }, select: { docente_usuario_id: true } });
-    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e=new Error('No autorizado a esta materia'); e.status=403; throw e; }
-    // estudiantes conocidos por historial de asistencia
-    const asist = await prisma.complexivo_asistencias.findMany({ where: { materia_id: materiaId }, select: { estudiante_id: true } });
-    const estIds = Array.from(new Set(asist.map(a => a.estudiante_id))).filter(x => Number.isFinite(Number(x)));
+    if (!Number.isFinite(materiaId)) { const e = new Error('Parámetro inválido'); e.status = 400; throw e; }
+    const mat = await prisma.complexivo_materias.findUnique({ where: { complexivo_materia_id: materiaId }, select: { docente_usuario_id: true, carrera_id: true, periodo_id: true } });
+    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e = new Error('No autorizado a esta materia'); e.status = 403; throw e; }
+    // estudiantes por modalidad EXAMEN_COMPLEXIVO y carrera en el período
+    const mods = await prisma.modalidades_elegidas.findMany({
+      where: {
+        periodo_id: Number(mat.periodo_id),
+        modalidad: 'EXAMEN_COMPLEXIVO',
+        ...(Number.isFinite(Number(mat.carrera_id)) ? { carrera_id: Number(mat.carrera_id) } : {}),
+      },
+      select: { estudiante_id: true }
+    });
+    const estIds = Array.from(new Set(mods.map(m => Number(m.estudiante_id)).filter(n => Number.isFinite(n) && n > 0)));
     if (estIds.length === 0) return res.json([]);
     const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: estIds } }, select: { usuario_id: true, nombre: true, apellido: true } });
-    const data = usuarios.map(u => ({ id: String(u.usuario_id), nombre: `${u.nombre} ${u.apellido}`.trim() }));
+    const mapUser = new Map(usuarios.map(u => [u.usuario_id, `${u.nombre} ${u.apellido}`.trim()]));
+    const data = estIds.map(id => ({ id: String(id), nombre: mapUser.get(id) || `Usuario ${id}` })).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
     res.json(data);
   } catch (err) { next(err); }
 });
 
 // GET /docente/complexivo/materias/:materiaId/asistencia/fechas -> lista de fechas con registros
-router.get('/complexivo/materias/:materiaId/asistencia/fechas', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/complexivo/materias/:materiaId/asistencia/fechas', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const materiaId = Number(req.params.materiaId);
-    if (!Number.isFinite(materiaId)) { const e=new Error('Parámetro inválido'); e.status=400; throw e; }
+    if (!Number.isFinite(materiaId)) { const e = new Error('Parámetro inválido'); e.status = 400; throw e; }
     const mat = await prisma.complexivo_materias.findUnique({ where: { complexivo_materia_id: materiaId }, select: { docente_usuario_id: true } });
-    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e=new Error('No autorizado a esta materia'); e.status=403; throw e; }
+    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e = new Error('No autorizado a esta materia'); e.status = 403; throw e; }
     const fechas = await prisma.$queryRaw`SELECT DISTINCT fecha FROM complexivo_asistencias WHERE materia_id = ${materiaId} ORDER BY fecha DESC`;
-    const list = Array.isArray(fechas) ? fechas.map((r) => (r.fecha instanceof Date ? r.fecha.toISOString().slice(0,10) : String(r.fecha))).filter(Boolean) : [];
+    const list = Array.isArray(fechas) ? fechas.map((r) => (r.fecha instanceof Date ? r.fecha.toISOString().slice(0, 10) : String(r.fecha))).filter(Boolean) : [];
     res.json(list);
   } catch (err) { next(err); }
 });
 
 // GET /docente/complexivo/materias/:materiaId/asistencia?fecha=YYYY-MM-DD
-router.get('/complexivo/materias/:materiaId/asistencia', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/complexivo/materias/:materiaId/asistencia', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const materiaId = Number(req.params.materiaId);
     const fechaStr = String(req.query?.fecha || '');
-    if (!Number.isFinite(materiaId) || !/\d{4}-\d{2}-\d{2}/.test(fechaStr)) { const e=new Error('Parámetros inválidos'); e.status=400; throw e; }
+    if (!Number.isFinite(materiaId) || !/\d{4}-\d{2}-\d{2}/.test(fechaStr)) { const e = new Error('Parámetros inválidos'); e.status = 400; throw e; }
     const mat = await prisma.complexivo_materias.findUnique({ where: { complexivo_materia_id: materiaId }, select: { docente_usuario_id: true } });
-    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e=new Error('No autorizado a esta materia'); e.status=403; throw e; }
+    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e = new Error('No autorizado a esta materia'); e.status = 403; throw e; }
     const fecha = new Date(fechaStr);
     const rows = await prisma.complexivo_asistencias.findMany({ where: { materia_id: materiaId, fecha }, select: { estudiante_id: true, estado: true } });
     // mapear nombres
@@ -518,15 +599,15 @@ router.get('/complexivo/materias/:materiaId/asistencia', authorize('Docente','Ad
 });
 
 // PUT /docente/complexivo/materias/:materiaId/asistencia  Body: { fecha: 'YYYY-MM-DD', items: [{ id: string, presente: boolean }] }
-router.put('/complexivo/materias/:materiaId/asistencia', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.put('/complexivo/materias/:materiaId/asistencia', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const materiaId = Number(req.params.materiaId);
     const { fecha, items } = req.body || {};
-    if (!Number.isFinite(materiaId) || !fecha || !Array.isArray(items)) { const e=new Error('Parámetros inválidos'); e.status=400; throw e; }
+    if (!Number.isFinite(materiaId) || !fecha || !Array.isArray(items)) { const e = new Error('Parámetros inválidos'); e.status = 400; throw e; }
     const mat = await prisma.complexivo_materias.findUnique({ where: { complexivo_materia_id: materiaId }, select: { docente_usuario_id: true } });
-    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e=new Error('No autorizado a esta materia'); e.status=403; throw e; }
+    if (!mat || Number(mat.docente_usuario_id) !== Number(me)) { const e = new Error('No autorizado a esta materia'); e.status = 403; throw e; }
     const fechaDt = new Date(String(fecha));
     for (const it of items) {
       const estId = Number(it?.id);
@@ -548,17 +629,17 @@ router.put('/complexivo/materias/:materiaId/asistencia', authorize('Docente','Ad
 
 // GET /docente/lector/estudiantes
 // Lista estudiantes UIC donde soy lector en el período activo, con carrera y último documento uic_final
-router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.get('/lector/estudiantes', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     // período activo
     let id_ap = undefined;
     try {
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
+    } catch (_) { }
     if (!Number.isFinite(Number(id_ap))) return res.json([]);
 
     // asignaciones donde soy lector
@@ -580,7 +661,7 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
     let careerNameMap = {};
     try {
       const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
-      const careerIds = Array.from(new Set(asigns.map(a => a.carrera_id).filter(x=>Number.isFinite(Number(x)))));
+      const careerIds = Array.from(new Set(asigns.map(a => a.carrera_id).filter(x => Number.isFinite(Number(x)))));
       if (careerIds.length > 0) {
         const inList = careerIds.join(',');
         const rows = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`);
@@ -601,7 +682,7 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
           select: { ruta_archivo: true }
         });
         docUrl = doc?.ruta_archivo || null;
-      } catch (_) {}
+      } catch (_) { }
       data.push({
         id: String(a.estudiante_id),
         nombre: nameMap.get(a.estudiante_id) || `Usuario ${a.estudiante_id}`,
@@ -612,19 +693,19 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
       });
     }
     // ordenar alfabéticamente
-    data.sort((x,y)=> String(x.nombre).localeCompare(String(y.nombre)));
+    data.sort((x, y) => String(x.nombre).localeCompare(String(y.nombre)));
     res.json(data);
   } catch (err) { next(err); }
 });
 
 // PUT /docente/lector/estudiantes/:estudianteId/review
 // Body: { calificacion: number|null, observacion?: string }
-router.put('/lector/estudiantes/:estudianteId/review', authorize('Docente','Administrador','Coordinador'), async (req, res, next) => {
+router.put('/lector/estudiantes/:estudianteId/review', authorize('Docente', 'Administrador', 'Coordinador'), async (req, res, next) => {
   try {
-    const me = req.user?.sub;
-    if (!Number.isFinite(Number(me))) { const e=new Error('No autorizado'); e.status=401; throw e; }
+    const me = getEffectiveDocenteId(req);
+    if (!Number.isFinite(Number(me))) { const e = new Error('No autorizado'); e.status = 401; throw e; }
     const estudianteId = Number(req.params.estudianteId);
-    if (!Number.isFinite(estudianteId)) { const e=new Error('Parámetro inválido'); e.status=400; throw e; }
+    if (!Number.isFinite(estudianteId)) { const e = new Error('Parámetro inválido'); e.status = 400; throw e; }
     const { calificacion, observacion } = req.body || {};
 
     // normalizar calificación 0..10 con 1 decimal, o null
@@ -643,15 +724,15 @@ router.put('/lector/estudiantes/:estudianteId/review', authorize('Docente','Admi
       const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
       const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
       id_ap = per?.id_academic_periods;
-    } catch (_) {}
-    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+    } catch (_) { }
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
 
     // verificar que soy lector asignado del estudiante
     const asign = await prisma.uic_asignaciones.findFirst({
       where: { periodo_id: Number(id_ap), lector_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
       select: { uic_asignacion_id: true }
     });
-    if (!asign) { const e=new Error('Estudiante no asignado a su lectura'); e.status=404; throw e; }
+    if (!asign) { const e = new Error('Estudiante no asignado a su lectura'); e.status = 404; throw e; }
 
     // actualizar valores en la asignación
     await prisma.uic_asignaciones.update({
@@ -670,7 +751,7 @@ router.put('/lector/estudiantes/:estudianteId/review', authorize('Docente','Admi
         entity_type: 'uic_lector_review',
         entity_id: Number(asign.uic_asignacion_id),
       });
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({ ok: true });
   } catch (err) { next(err); }

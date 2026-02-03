@@ -4,45 +4,76 @@ const authorize = require("../middlewares/authorize");
 const { generarCertNotas, listPromedios, getPromediosById, getNotasDetalle, approve, reject, reconsider, actaLista, actaFirmada, listActas, saveNotaTribunal, generateHoja, linkHoja } = require("../controllers/secretariaController");
 const prisma = require("../../prisma/client");
 
+function safeSchemaName(schema) {
+  const s = String(schema || '').trim();
+  return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+}
+
+async function getInstituteNameMapForUserIds(userIds) {
+  const ids = Array.from(new Set((userIds || []).map(n => Number(n)).filter(Number.isFinite)));
+  if (!ids.length) return new Map();
+  const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+  const placeholders = ids.map(() => '?').join(',');
+  const sql = `
+    SELECT
+      u.ID_USUARIOS AS usuario_id,
+      TRIM(CONCAT(COALESCE(u.NOMBRES_USUARIOS,''),' ',COALESCE(u.APELLIDOS_USUARIOS,''))) AS nombre
+    FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
+    WHERE u.ID_USUARIOS IN (${placeholders})
+  `;
+  try {
+    const rows = await prisma.$queryRawUnsafe(sql, ...ids);
+    const map = new Map();
+    for (const r of (rows || [])) {
+      const id = Number(r.usuario_id);
+      const nombre = r?.nombre ? String(r.nombre).trim() : null;
+      if (Number.isFinite(id) && nombre) map.set(id, nombre);
+    }
+    return map;
+  } catch (_) {
+    return new Map();
+  }
+}
+
 // POST /secretaria/certificados/notas
-router.post("/certificados/notas", authorize('Secretaria','Administrador'), generarCertNotas);
+router.post("/certificados/notas", authorize('Secretaria', 'Administrador'), generarCertNotas);
 
 // GET /secretaria/promedios
-router.get("/promedios", authorize('Secretaria','Administrador'), listPromedios);
+router.get("/promedios", authorize('Secretaria', 'Administrador'), listPromedios);
 
 // GET /secretaria/promedios/:id
-router.get("/promedios/:id", authorize('Secretaria','Administrador'), getPromediosById);
+router.get("/promedios/:id", authorize('Secretaria', 'Administrador'), getPromediosById);
 
 // GET /secretaria/notas/:id
-router.get("/notas/:id", authorize('Secretaria','Administrador'), getNotasDetalle);
+router.get("/notas/:id", authorize('Secretaria', 'Administrador'), getNotasDetalle);
 
 // PUT /secretaria/validaciones/approve
-router.put("/validaciones/approve", authorize('Secretaria','Administrador'), approve);
+router.put("/validaciones/approve", authorize('Secretaria', 'Administrador'), approve);
 
 // PUT /secretaria/validaciones/reject
-router.put("/validaciones/reject", authorize('Secretaria','Administrador'), reject);
+router.put("/validaciones/reject", authorize('Secretaria', 'Administrador'), reject);
 
 // PUT /secretaria/validaciones/reconsider
-router.put("/validaciones/reconsider", authorize('Secretaria','Administrador'), reconsider);
+router.put("/validaciones/reconsider", authorize('Secretaria', 'Administrador'), reconsider);
 
 // PUT /secretaria/actas/:id/lista
-router.put("/actas/:id/lista", authorize('Secretaria','Administrador'), actaLista);
+router.put("/actas/:id/lista", authorize('Secretaria', 'Administrador'), actaLista);
 
 // PUT /secretaria/actas/:id/firmada
-router.put("/actas/:id/firmada", authorize('Secretaria','Administrador'), actaFirmada);
+router.put("/actas/:id/firmada", authorize('Secretaria', 'Administrador'), actaFirmada);
 
 // ============== Acta de Grado ==============
 // GET /secretaria/actas (lista estudiantes con tribunal y estado de hoja)
-router.get("/actas", authorize('Secretaria','Administrador'), listActas);
+router.get("/actas", authorize('Secretaria', 'Administrador'), listActas);
 // PUT /secretaria/actas/nota { id_user_student, score }
-router.put("/actas/nota", authorize('Secretaria','Administrador'), saveNotaTribunal);
+router.put("/actas/nota", authorize('Secretaria', 'Administrador'), saveNotaTribunal);
 // POST /secretaria/actas/hoja { id_user_student } -> PDF stream
-router.post("/actas/hoja", authorize('Secretaria','Administrador'), generateHoja);
+router.post("/actas/hoja", authorize('Secretaria', 'Administrador'), generateHoja);
 // PUT /secretaria/actas/link-hoja { id_user_student, documento_id }
-router.put("/actas/link-hoja", authorize('Secretaria','Administrador'), linkHoja);
+router.put("/actas/link-hoja", authorize('Secretaria', 'Administrador'), linkHoja);
 
 // GET /secretaria/dashboard
-router.get("/dashboard", authorize('Secretaria','Administrador'), async (req, res, next) => {
+router.get("/dashboard", authorize('Secretaria', 'Administrador'), async (req, res, next) => {
   try {
     const overrideAp = req.query?.academicPeriodId ? Number(req.query.academicPeriodId) : undefined;
 
@@ -55,7 +86,7 @@ router.get("/dashboard", authorize('Secretaria','Administrador'), async (req, re
     }
 
     // hoy (inicio de día)
-    const start = new Date(); start.setHours(0,0,0,0);
+    const start = new Date(); start.setHours(0, 0, 0, 0);
 
     // actas pendientes: asignaciones UIC sin acta_doc_id
     const actasPendientes = Number.isFinite(Number(id_ap))
@@ -65,13 +96,13 @@ router.get("/dashboard", authorize('Secretaria','Administrador'), async (req, re
     // certificados emitidos hoy (secretaría) en el período activo
     const certificadosEmitidosHoy = Number.isFinite(Number(id_ap))
       ? await prisma.procesos_validaciones.count({
-          where: {
-            periodo_id: Number(id_ap),
-            proceso: 'secretaria_promedios',
-            certificado_doc_id: { not: null },
-            actualizado_en: { gte: start },
-          }
-        }).catch(() => 0)
+        where: {
+          periodo_id: Number(id_ap),
+          proceso: 'secretaria_promedios',
+          certificado_doc_id: { not: null },
+          actualizado_en: { gte: start },
+        }
+      }).catch(() => 0)
       : 0;
 
     // matrículas procesadas (modalidades elegidas del período)
@@ -94,7 +125,7 @@ router.get("/dashboard", authorize('Secretaria','Administrador'), async (req, re
 });
 
 // GET /secretaria/recientes
-router.get("/recientes", authorize('Secretaria','Administrador'), async (req, res, next) => {
+router.get("/recientes", authorize('Secretaria', 'Administrador'), async (req, res, next) => {
   try {
     const sinceDays = Number.isFinite(Number(req.query?.days)) ? Number(req.query.days) : 7;
     const since = new Date(); since.setDate(since.getDate() - sinceDays);
@@ -111,7 +142,7 @@ router.get("/recientes", authorize('Secretaria','Administrador'), async (req, re
     // 1) documentos de secretaría
     const docs = await prisma.documentos.findMany({
       where: { tipo: 'cert_secretaria', creado_en: { gte: since } },
-      select: { creado_en: true, usuario_id: true },
+      select: { creado_en: true, usuario_id: true, estudiante_id: true },
       orderBy: { creado_en: 'desc' },
       take: 10,
     });
@@ -124,16 +155,31 @@ router.get("/recientes", authorize('Secretaria','Administrador'), async (req, re
     });
     // Mapear usuarios
     const userIds = Array.from(new Set([
-      ...docs.map(d => Number(d.usuario_id)).filter(n => Number.isFinite(n)),
+      ...docs.map(d => Number(d.estudiante_id)).filter(n => Number.isFinite(n)),
       ...vals.map(v => Number(v.estudiante_id)).filter(n => Number.isFinite(n))
     ]));
     const users = userIds.length > 0 ? await prisma.usuarios.findMany({ where: { usuario_id: { in: userIds } }, select: { usuario_id: true, nombre: true, apellido: true } }) : [];
-    const nameMap = new Map(users.map(u => [u.usuario_id, `${u.nombre} ${u.apellido}`.trim()]));
+    const nameMap = new Map(users
+      .map(u => {
+        const nm = `${String(u.nombre || '').trim()} ${String(u.apellido || '').trim()}`.trim();
+        return [u.usuario_id, nm];
+      })
+      .filter((pair) => !!pair[1]));
+
+    // Fallback al instituto para IDs que no están en la tabla local 'usuarios'
+    const missingIds = userIds.filter(id => !nameMap.get(Number(id)));
+    if (missingIds.length) {
+      const instMap = await getInstituteNameMapForUserIds(missingIds);
+      for (const id of missingIds) {
+        const nm = instMap.get(Number(id));
+        if (nm) nameMap.set(Number(id), nm);
+      }
+    }
 
     const items = [];
     for (const d of docs) {
       items.push({
-        estudiante: nameMap.get(Number(d.usuario_id)) || `Usuario ${d.usuario_id}`,
+        estudiante: nameMap.get(Number(d.estudiante_id)) || `Usuario ${d.estudiante_id}`,
         tramite: 'Emisión de certificado',
         fecha: d.creado_en,
         estado: 'completado',
@@ -147,8 +193,8 @@ router.get("/recientes", authorize('Secretaria','Administrador'), async (req, re
         estado: v.estado === 'approved' ? 'completado' : (v.estado === 'rejected' ? 'rechazado' : 'pendiente'),
       });
     }
-    items.sort((a,b)=> new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
-    res.json(items.slice(0,10));
+    items.sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+    res.json(items.slice(0, 10));
   } catch (err) { next(err); }
 });
 

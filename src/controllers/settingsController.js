@@ -15,6 +15,7 @@ async function setActivePeriod(req, res, next) {
     const schema = z.object({
       id_academic_periods: z.coerce.number().int(),
       name: z.string().min(1),
+      external_period_id: z.coerce.number().int().optional(),
     });
     const input = schema.parse(req.body || {});
     console.log('[settings] setActivePeriod input:', input);
@@ -31,7 +32,7 @@ async function setActivePeriod(req, res, next) {
     try {
       await notifications.notifyRoles({
         roles: [
-          'Administrador','Estudiante','Secretaria','Tesoreria','Coordinador','Docente','Vicerrector','Ingles','Vinculacion_Practicas'
+          'Administrador', 'Estudiante', 'Secretaria', 'Tesoreria', 'Coordinador', 'Docente', 'Vicerrector', 'Ingles', 'Vinculacion_Practicas'
         ],
         type: 'periodo_nuevo',
         title: `Nuevo período activo: ${value.name}`,
@@ -42,22 +43,25 @@ async function setActivePeriod(req, res, next) {
     } catch (e) { /* continuar sin bloquear respuesta */ }
     res.json(value);
   } catch (err) {
-    try { console.error('[settings] setActivePeriod error:', err); } catch(_) {}
+    try { console.error('[settings] setActivePeriod error:', err); } catch (_) { }
     if (err.name === "ZodError") {
-      err.status = 400; err.message = err.errors.map(e=>e.message).join(", ");
+      err.status = 400; err.message = err.errors.map(e => e.message).join(", ");
     }
     // Devolver error claro
     res.status(err.status || 500).json({ message: err.message || 'Error activando período' });
   }
 }
-
-module.exports = { getActivePeriod, setActivePeriod };
 async function listPeriods(req, res, next) {
   try { const rows = await settingsService.listAllPeriods(); res.json(rows || []); }
   catch (err) { next(err); }
 }
 
-module.exports = { getActivePeriod, setActivePeriod, listPeriods };
+async function listInstitutePeriods(req, res, next) {
+  try {
+    const rows = await settingsService.listInstitutePeriods();
+    res.json(rows || []);
+  } catch (err) { next(err); }
+}
 
 // Feature flags (habilitaciones)
 async function getFeatureFlags(req, res, next) {
@@ -75,7 +79,7 @@ async function updatePeriod(req, res, next) {
       name: z.string().min(1).optional(),
       date_start: z.string().optional(),
       date_end: z.string().optional(),
-      status: z.enum(['activo','inactivo']).optional(),
+      status: z.enum(['activo', 'inactivo']).optional(),
     });
     const parsed = schema.parse({ id: req.params.id, ...req.body });
     const value = await settingsService.updatePeriod({
@@ -87,7 +91,7 @@ async function updatePeriod(req, res, next) {
     });
     res.json(value);
   } catch (err) {
-    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e=>e.message).join(', ');} next(err);
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err);
   }
 }
 
@@ -99,7 +103,7 @@ async function closePeriod(req, res, next) {
     const value = await settingsService.closePeriod(id);
     res.json(value || {});
   } catch (err) {
-    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e=>e.message).join(', ');} next(err);
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err);
   }
 }
 
@@ -115,7 +119,7 @@ async function clearActivePeriod(req, res, next) {
 async function getAdminStats(req, res, next) {
   try {
     const rolesProceso = [
-      'Administrador','Estudiante','Secretaria','Tesoreria','Coordinador','Docente','Vicerrector','Ingles','Vinculacion_Practicas'
+      'Administrador', 'Estudiante', 'Secretaria', 'Tesoreria', 'Coordinador', 'Docente', 'Vicerrector', 'Ingles', 'Vinculacion_Practicas'
     ];
     // Contar usuarios activos con cualquiera de esos roles en la tabla "usuarios"
     const rows = await prisma.usuarios.count({
@@ -145,7 +149,7 @@ async function setFeatureFlags(req, res, next) {
     // notificar habilitaciones actualizadas a Estudiantes y Coordinadores
     try {
       await notifications.notifyRoles({
-        roles: ['Estudiante','Coordinador'],
+        roles: ['Estudiante', 'Coordinador'],
         type: 'habilitaciones_actualizadas',
         title: 'Habilitaciones actualizadas',
         message: `Pagos: ${value.pagos ? 'ON' : 'OFF'} | Matrícula: ${value.matricula ? 'ON' : 'OFF'} | Modalidad: ${value.modalidad ? 'ON' : 'OFF'}`,
@@ -154,7 +158,7 @@ async function setFeatureFlags(req, res, next) {
       });
     } catch (_) { /* no bloquear */ }
     res.json(value);
-  } catch (err) { if (err.name==='ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 module.exports.getFeatureFlags = getFeatureFlags;
@@ -212,9 +216,14 @@ async function createPeriod(req, res, next) {
     });
     res.status(201).json(created);
   } catch (err) {
-    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e=>e.message).join(', ');} 
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); }
     next(err);
   }
 }
 
 module.exports.createPeriod = createPeriod;
+
+module.exports.getActivePeriod = getActivePeriod;
+module.exports.setActivePeriod = setActivePeriod;
+module.exports.listPeriods = listPeriods;
+module.exports.listInstitutePeriods = listInstitutePeriods;

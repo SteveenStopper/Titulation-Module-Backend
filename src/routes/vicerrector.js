@@ -46,6 +46,8 @@ router.post("/complexivo/materias/publicar", authorize('Vicerrector','Administra
 router.get("/docentes", authorize('Vicerrector','Administrador'), vc.listDocentes);
 router.get("/carreras", authorize('Vicerrector','Administrador'), vc.listCarreras);
 router.get("/materias-catalogo", authorize('Vicerrector','Administrador'), vc.listMateriasCatalogo);
+router.get("/semestres-catalogo", authorize('Vicerrector','Administrador'), vc.listSemestresCatalogo);
+router.get("/asignaturas-catalogo", authorize('Vicerrector','Administrador'), vc.listAsignaturasCatalogo);
 
 // ====== Reportes (Vicerrectorado) ======
 router.get('/reportes/resumen', authorize('Vicerrector','Administrador'), vc.reportResumen);

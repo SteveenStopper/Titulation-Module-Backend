@@ -27,7 +27,80 @@ async function listCourses(req, res, next) { try { const schema=z.object({academ
 async function listCourseTeachers(req, res, next) { try { const schema=z.object({courseId:z.coerce.number().int(), academicPeriodId:z.coerce.number().int().optional()}); const p=schema.parse({courseId:req.params.courseId, academicPeriodId:req.query.academicPeriodId}); const data=await svc.listCourseTeachers(p); res.json(data);} catch(e){ if(e.name==='ZodError'){e.status=400;e.message=e.errors.map(x=>x.message).join(', ');} next(e);} }
 async function listVeedores(req, res, next) { try { const schema=z.object({careerId:z.coerce.number().int().optional(), academicPeriodId:z.coerce.number().int().optional()}); const q=schema.parse(req.query||{}); const data=await svc.listVeedores(q); res.json(data);} catch(e){ if(e.name==='ZodError'){e.status=400;e.message=e.errors.map(x=>x.message).join(', ');} next(e);} }
 
-module.exports = { myAttendance, addAttendance, listCourses, listCourseTeachers, listVeedores };
+async function listDocentesInstituto(req, res, next) {
+  try {
+    const schema = z.object({ academicPeriodId: z.coerce.number().int().optional() });
+    schema.parse(req.query || {});
+    const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+
+    // Intentar primero desde BD del instituto
+    try {
+      const inst = await prisma.$queryRawUnsafe(`
+        SELECT
+          ID_USUARIOS AS id,
+          NOMBRES_USUARIOS AS nombres,
+          APELLIDOS_USUARIOS AS apellidos,
+          CORREO_USUARIOS AS correo
+        FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS
+        WHERE (STATUS_USUARIOS='ACTIVO' OR STATUS_USUARIOS IS NULL)
+          AND ID_PERFILES_USUARIOS = 15
+        ORDER BY APELLIDOS_USUARIOS ASC, NOMBRES_USUARIOS ASC
+      `);
+
+      const list = Array.isArray(inst) ? inst : [];
+      if (!list.length) throw new Error('No docentes from institute');
+
+      // Asegurar rol Docente en BD local y sincronizar mínimo
+      const docenteRole = await prisma.roles.findFirst({ where: { nombre: 'Docente' }, select: { rol_id: true } });
+      for (const r of list) {
+        const id = Number(r.id);
+        if (!Number.isFinite(id)) continue;
+        const nombre = String(r.nombres || '').trim();
+        const apellido = String(r.apellidos || '').trim();
+        const correo = r.correo != null ? String(r.correo).trim() : null;
+        // eslint-disable-next-line no-await-in-loop
+        await prisma.usuarios.upsert({
+          where: { usuario_id: id },
+          update: { nombre, apellido, correo, activo: true },
+          create: { usuario_id: id, nombre, apellido, correo, activo: true, clave: '' },
+          select: { usuario_id: true }
+        });
+        if (docenteRole?.rol_id) {
+          // eslint-disable-next-line no-await-in-loop
+          const has = await prisma.usuario_roles.findFirst({ where: { usuario_id: id, rol_id: docenteRole.rol_id }, select: { usuario_rol_id: true } });
+          if (!has) {
+            // eslint-disable-next-line no-await-in-loop
+            await prisma.usuario_roles.create({ data: { usuario_id: id, rol_id: docenteRole.rol_id } });
+          }
+        }
+      }
+
+      const data = list
+        .map(r => ({
+          id_user: Number(r.id),
+          fullname: `${String(r.nombres || '')} ${String(r.apellidos || '')}`.trim(),
+          email: r.correo != null ? String(r.correo) : null,
+        }))
+        .filter(x => Number.isFinite(Number(x.id_user)));
+
+      return res.json(data);
+    } catch (_) {
+      // Fallback: docentes locales
+      const rows = await prisma.usuarios.findMany({
+        where: { activo: true, usuario_roles: { some: { roles: { nombre: 'Docente' } } } },
+        select: { usuario_id: true, nombre: true, apellido: true, correo: true },
+        orderBy: [{ apellido: 'asc' }, { nombre: 'asc' }]
+      });
+      const data = rows.map(r => ({ id_user: r.usuario_id, fullname: `${r.nombre} ${r.apellido}`.trim(), email: r.correo || null }));
+      return res.json(data);
+    }
+  } catch (e) {
+    if (e.name === 'ZodError') { e.status = 400; e.message = e.errors.map(x => x.message).join(', '); }
+    next(e);
+  }
+}
+
+module.exports = { myAttendance, addAttendance, listCourses, listCourseTeachers, listVeedores, listDocentesInstituto };
 
 // POST /complexivo/veedores/assign  { teacherId, careerId, academicPeriodId? }
 async function assignVeedor(req, res, next) {

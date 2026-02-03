@@ -1,5 +1,14 @@
 const prisma = require("../../prisma/client");
 
+function normalizeRoleName(role) {
+  const s = String(role || '').trim();
+  if (!s) return '';
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
 // Normaliza el registro de BD (notificaciones) al shape esperado por el FE
 function normalize(row) {
   if (!row) return null;
@@ -18,7 +27,10 @@ function normalize(row) {
 async function listMy({ id_user, roles, onlyUnread, page, pageSize }) {
   const take = Number.isFinite(pageSize) && pageSize > 0 ? Math.trunc(pageSize) : undefined;
   const skip = Number.isFinite(page) && page > 1 && take ? (Math.trunc(page) - 1) * take : undefined;
-  const roleFilter = Array.isArray(roles) && roles.length ? { destinatario_rol: { in: roles } } : undefined;
+  const inputRoles = Array.isArray(roles) ? roles.map(r => String(r || '').trim()).filter(Boolean) : [];
+  const normalized = inputRoles.map(normalizeRoleName).filter(Boolean);
+  const roleSet = Array.from(new Set([...inputRoles, ...normalized]));
+  const roleFilter = roleSet.length ? { destinatario_rol: { in: roleSet } } : undefined;
   const rows = await prisma.notificaciones.findMany({
     where: {
       ...(onlyUnread ? { leida: false } : {}),
@@ -68,15 +80,20 @@ async function createManyUsers({ userIds, type, title, message, entity_type = nu
 // Crear notificaciones para todos los usuarios que tengan alguno de los roles especificados
 async function notifyRoles({ roles, type, title, message, entity_type = null, entity_id = null }) {
   if (!Array.isArray(roles) || roles.length === 0) return { count: 0 };
-  const users = await prisma.usuario_roles.findMany({
-    where: { roles: { nombre: { in: roles } } },
-    select: { usuario_id: true },
-    distinct: ["usuario_id"],
-  });
-  if (!users || users.length === 0) return { count: 0 };
-  const data = users.map(u => ({ destinatario_usuario_id: Number(u.usuario_id), destinatario_rol: type ?? null, titulo: title, cuerpo: message ?? '' }));
-  const res = await prisma.notificaciones.createMany({ data, skipDuplicates: true });
-  return res;
+  const uniqueRoles = Array.from(new Set(roles.map(r => String(r || '').trim()).filter(Boolean)));
+  if (!uniqueRoles.length) return { count: 0 };
+
+  // Crear una notificación por rol. Los usuarios la verán en listMy() via roles del JWT.
+  const data = uniqueRoles.map((role) => ({
+    destinatario_usuario_id: null,
+    destinatario_rol: role,
+    titulo: title,
+    cuerpo: message ?? '',
+  }));
+
+  // Nota: no podemos usar skipDuplicates porque no hay unique constraint; creará un registro por evento.
+  const created = await prisma.notificaciones.createMany({ data });
+  return created;
 }
 
 module.exports = { listMy, markRead, markAllRead, create, notifyRoles };

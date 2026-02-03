@@ -1,6 +1,85 @@
 const prisma = require("../../prisma/client");
 const path = require("path");
 
+function safeSchemaName(schema) {
+  const s = String(schema || '').trim();
+  return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+}
+
+async function getCareerMapForUserIds(userIds) {
+  const ids = Array.from(new Set((userIds || []).map(n => Number(n)).filter(Number.isFinite)));
+  if (!ids.length) return new Map();
+  const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+  const placeholders = ids.map(() => '?').join(',');
+  const sql = `
+    SELECT
+      u.ID_USUARIOS AS estudiante_id,
+      c.NOMBRE_CARRERAS AS carrera
+    FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
+    LEFT JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS c
+      ON c.ID_CARRERAS = u.ID_CARRERA
+    WHERE u.ID_USUARIOS IN (${placeholders})
+  `;
+  let rows = [];
+  try {
+    rows = await prisma.$queryRawUnsafe(sql, ...ids);
+  } catch (_) {
+    rows = [];
+  }
+  const map = new Map();
+  for (const r of (rows || [])) {
+    const id = Number(r.estudiante_id);
+    const carrera = r && r.carrera ? String(r.carrera).trim() : null;
+    if (Number.isFinite(id)) map.set(id, carrera);
+  }
+
+  // Fallback en BDD del instituto: obtener carrera desde la última matrícula
+  // Útil cuando SEGURIDAD_USUARIOS.ID_CARRERA viene NULL.
+  const missing = ids.filter(id => !map.get(id));
+  if (missing.length) {
+    const ph2 = missing.map(() => '?').join(',');
+    const sqlMat = `
+      SELECT
+        x.estudiante_id,
+        car.NOMBRE_CARRERAS AS carrera
+      FROM (
+        SELECT
+          u.ID_USUARIOS AS estudiante_id,
+          MAX(mm.ID_PERIODO_MATRICULA) AS max_periodo
+        FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
+        JOIN ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me
+          ON REPLACE(REPLACE(u.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(me.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
+        JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA mm
+          ON mm.ID_ESTUDIANTE_MATRICULA = me.ID_ESTUDIANTES
+        WHERE u.ID_USUARIOS IN (${ph2})
+        GROUP BY u.ID_USUARIOS
+      ) x
+      JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u2
+        ON u2.ID_USUARIOS = x.estudiante_id
+      JOIN ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me2
+        ON REPLACE(REPLACE(u2.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(me2.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
+      JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA mm2
+        ON mm2.ID_ESTUDIANTE_MATRICULA = me2.ID_ESTUDIANTES
+       AND mm2.ID_PERIODO_MATRICULA = x.max_periodo
+      JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc
+        ON fc.ID_FORMAR_CURSOS = mm2.ID_FORMAR_CURSOS_MATRICULA
+      JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS car
+        ON car.ID_CARRERAS = fc.ID_CARRERA_FORMAR_CURSOS
+    `;
+    try {
+      const rows2 = await prisma.$queryRawUnsafe(sqlMat, ...missing);
+      for (const r of (rows2 || [])) {
+        const id = Number(r.estudiante_id);
+        const carrera = r && r.carrera ? String(r.carrera).trim() : null;
+        if (Number.isFinite(id) && carrera) map.set(id, carrera);
+      }
+    } catch (_) {
+      // noop
+    }
+  }
+  return map;
+}
+
 async function getPeriodDateRange(academicPeriodId) {
   const id = Number(academicPeriodId);
   if (!Number.isFinite(id)) return null;
@@ -149,6 +228,8 @@ async function listVouchers(query) {
       }),
     ]);
 
+    const careerMap = await getCareerMapForUserIds((docs || []).map(d => d.usuario_id));
+
     const data = docs.map(d => ({
       id_voucher: d.documento_id,
       voucher_type: documentoTipoToVoucherType(d.tipo),
@@ -157,6 +238,8 @@ async function listVouchers(query) {
       status: d.estado,
       observation: d.observacion,
       id_user: d.usuario_id,
+      career: careerMap.get(Number(d.usuario_id)) || null,
+      carrera: careerMap.get(Number(d.usuario_id)) || null,
       vouchers: d.ruta_archivo,
       filename: d.nombre_archivo,
       mime: d.mime_type,

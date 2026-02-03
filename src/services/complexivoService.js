@@ -52,11 +52,35 @@ async function listCourseTeachers({ courseId, academicPeriodId }) {
 
 async function listVeedores({ careerId, academicPeriodId }) {
   const id_ap = academicPeriodId ?? (await getActivePeriodId());
-  const where = { ...(careerId ? { id_career: careerId } : {}), ...(id_ap ? { id_academic_periods: id_ap } : {}) };
-  return prisma.veedor_assignments.findMany({
+
+  const where = {
+    ...(Number.isFinite(Number(id_ap)) ? { id_academic_periods: Number(id_ap) } : {}),
+    ...(Number.isFinite(Number(careerId)) ? { id_career: Number(careerId) } : {}),
+  };
+
+  const rows = await prisma.veedor_assignments.findMany({
     where,
-    select: { id: true, id_career: true, id_academic_periods: true, users: { select: { id_user: true, firstname: true, lastname: true, email: true } } },
+    select: {
+      id: true,
+      id_career: true,
+      id_academic_periods: true,
+      id_user: true,
+      usuarios: { select: { usuario_id: true, nombre: true, apellido: true, correo: true } },
+    }
   });
+
+  const list = Array.isArray(rows) ? rows : [];
+  return list.map(r => ({
+    id: Number(r.id),
+    id_career: Number(r.id_career),
+    id_academic_periods: Number(r.id_academic_periods),
+    users: {
+      id_user: Number(r.usuarios?.usuario_id ?? r.id_user),
+      firstname: r.usuarios?.nombre != null ? String(r.usuarios.nombre) : '',
+      lastname: r.usuarios?.apellido != null ? String(r.usuarios.apellido) : '',
+      email: r.usuarios?.correo != null ? String(r.usuarios.correo) : null,
+    }
+  }));
 }
 
 module.exports = { listMyAttendance, addAttendance, listCourses, listCourseTeachers, listVeedores };

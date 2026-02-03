@@ -21,7 +21,7 @@ async function listEligible(req, res, next) {
     const { academicPeriodId } = schema.parse(req.query || {});
     const rows = await svc.listEligible({ academicPeriodId });
     res.json(Array.isArray(rows) ? rows : []);
-  } catch (e) { if (e.name==='ZodError'){ e.status=400; e.message=e.errors.map(x=>x.message).join(', ');} next(e);} 
+  } catch (e) { if (e.name === 'ZodError') { e.status = 400; e.message = e.errors.map(x => x.message).join(', '); } next(e); }
 }
 
 async function saveFor(req, res, next) {
@@ -30,15 +30,15 @@ async function saveFor(req, res, next) {
     const { target_user_id, score, academicPeriodId } = schema.parse(req.body || {});
     const data = await svc.saveFor({ target_user_id, academicPeriodId, score });
     res.status(201).json(data);
-  } catch (e) { if (e.name==='ZodError'){ e.status=400; e.message=e.errors.map(x=>x.message).join(', ');} next(e);} 
+  } catch (e) { if (e.name === 'ZodError') { e.status = 400; e.message = e.errors.map(x => x.message).join(', '); } next(e); }
 }
 
 async function certificate(req, res, next) {
   try {
     let PDFDocument;
     try { PDFDocument = require('pdfkit'); }
-    catch (_) { const err=new Error('Generación de PDF no disponible. Instala la dependencia: npm i pdfkit'); err.status=501; throw err; }
-    const id_user = req.user?.sub; if (!id_user) { const e = new Error('No autorizado'); e.status=401; throw e; }
+    catch (_) { const err = new Error('Generación de PDF no disponible. Instala la dependencia: npm i pdfkit'); err.status = 501; throw err; }
+    const id_user = req.user?.sub; if (!id_user) { const e = new Error('No autorizado'); e.status = 401; throw e; }
 
     // Datos simples del emisor (para demo)
     res.setHeader('Content-Type', 'application/pdf');
@@ -88,7 +88,21 @@ async function dashboard(req, res, next) {
       practicasValidadas: Number(pVal || 0),
       certificadosEmitidosHoy: Number(certHoy || 0),
     });
-  } catch (e) { if (e.name==='ZodError'){ e.status=400; e.message=e.errors.map(x=>x.message).join(', ');} next(e); }
+  } catch (e) {
+    if (e.name === 'ZodError') {
+      e.status = 400; e.message = e.errors.map(x => x.message).join(', ');
+      return next(e);
+    }
+    try { console.error('[vinculacion] dashboard error:', e); } catch (_) { }
+    return res.json({
+      elegibles: 0,
+      vinculacionGuardadas: 0,
+      vinculacionValidadas: 0,
+      practicasGuardadas: 0,
+      practicasValidadas: 0,
+      certificadosEmitidosHoy: 0,
+    });
+  }
 }
 
 async function recientes(req, res, next) {
@@ -141,9 +155,16 @@ async function recientes(req, res, next) {
         estado: 'completado',
       });
     }
-    items.sort((a,b)=> new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+    items.sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
     res.json(items.slice(0, 10));
-  } catch (e) { if (e.name==='ZodError'){ e.status=400; e.message=e.errors.map(x=>x.message).join(', ');} next(e); }
+  } catch (e) {
+    if (e.name === 'ZodError') {
+      e.status = 400; e.message = e.errors.map(x => x.message).join(', ');
+      return next(e);
+    }
+    try { console.error('[vinculacion] recientes error:', e); } catch (_) { }
+    return res.json([]);
+  }
 }
 
 module.exports.dashboard = dashboard;

@@ -19,7 +19,7 @@ model complexivo_asistencias {
   estudiante_id            Int                           @db.UnsignedInt
   fecha                    DateTime                      @db.Date
   estado                   complexivo_asistencias_estado
-  complexivo_materias      complexivo_materias           @relation(fields: [materia_id], references: [complexivo_materia_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_asist_materia")
+  complexivo_materias      complexivo_materias           @relation(fields: [materia_id], references: [complexivo_materia_id], onUpdate: Restrict, map: "fk_asist_materia")
 
   @@unique([materia_id, estudiante_id, fecha], map: "uq_asistencia")
   @@index([materia_id], map: "idx_asist_materia")
@@ -34,8 +34,8 @@ model complexivo_materias {
   docente_usuario_id     Int                      @db.UnsignedInt
   creado_en              DateTime                 @default(now()) @db.DateTime(0)
   complexivo_asistencias complexivo_asistencias[]
-  usuarios               usuarios                 @relation(fields: [docente_usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_compmat_doc")
-  periodos               periodos                 @relation(fields: [periodo_id], references: [periodo_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_compmat_per")
+  usuarios               usuarios                 @relation(fields: [docente_usuario_id], references: [usuario_id], onUpdate: Restrict, map: "fk_compmat_doc")
+  periodos               periodos                 @relation(fields: [periodo_id], references: [periodo_id], onUpdate: Restrict, map: "fk_compmat_per")
 
   @@unique([periodo_id, carrera_id, codigo], map: "uq_comp_materia")
   @@index([docente_usuario_id], map: "idx_comp_doc")
@@ -49,7 +49,7 @@ model cronograma_items {
   fecha_inicio       DateTime    @db.DateTime(0)
   fecha_fin          DateTime    @db.DateTime(0)
   descripcion        String?     @db.Text
-  cronogramas        cronogramas @relation(fields: [cronograma_id], references: [cronograma_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_croni_cron")
+  cronogramas        cronogramas @relation(fields: [cronograma_id], references: [cronograma_id], onUpdate: Restrict, map: "fk_croni_cron")
 
   @@index([cronograma_id], map: "idx_croni_cron")
 }
@@ -62,8 +62,8 @@ model cronogramas {
   creado_por       Int?                  @db.UnsignedInt
   creado_en        DateTime              @default(now()) @db.DateTime(0)
   cronograma_items cronograma_items[]
-  periodos         periodos              @relation(fields: [periodo_id], references: [periodo_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_cron_periodo")
-  usuarios         usuarios?             @relation(fields: [creado_por], references: [usuario_id], onUpdate: NoAction, map: "fk_cron_usuario")
+  periodos         periodos              @relation(fields: [periodo_id], references: [periodo_id], onUpdate: Restrict, map: "fk_cron_periodo")
+  usuarios         usuarios?             @relation(fields: [creado_por], references: [usuario_id], onUpdate: Restrict, map: "fk_cron_usuario")
 
   @@index([creado_por], map: "idx_cron_creado")
   @@index([periodo_id], map: "idx_cron_periodo")
@@ -82,7 +82,7 @@ model documentos {
   observacion           String?                 @db.VarChar(500)
   creado_en             DateTime                @default(now()) @db.DateTime(0)
   estado                documentos_estado       @default(en_revision)
-  usuarios              usuarios?               @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_doc_usuario")
+  usuarios              usuarios?               @relation(fields: [usuario_id], references: [usuario_id], onDelete: Restrict, onUpdate: Restrict, map: "fk_doc_usuario")
   modalidades_elegidas  modalidades_elegidas[]
   procesos_validaciones procesos_validaciones[]
   uic_asignaciones      uic_asignaciones[]
@@ -100,8 +100,8 @@ model modalidades_elegidas {
   modalidad            modalidades_elegidas_modalidad
   comprobante_doc_id   Int?                           @db.UnsignedInt
   creado_en            DateTime                       @default(now()) @db.DateTime(0)
-  documentos           documentos?                    @relation(fields: [comprobante_doc_id], references: [documento_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_mod_comprobante_doc")
-  periodos             periodos                       @relation(fields: [periodo_id], references: [periodo_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_mod_per")
+  documentos           documentos?                    @relation(fields: [comprobante_doc_id], references: [documento_id], onDelete: Restrict, onUpdate: Restrict, map: "fk_mod_comprobante_doc")
+  periodos             periodos                       @relation(fields: [periodo_id], references: [periodo_id], onUpdate: Restrict, map: "fk_mod_per")
 
   @@index([comprobante_doc_id], map: "fk_mod_comprobante_doc")
   @@index([estudiante_id, periodo_id], map: "idx_mod_est")
@@ -116,7 +116,7 @@ model notificaciones {
   destinatario_rol        String?   @db.VarChar(50)
   leida                   Boolean   @default(false)
   creado_en               DateTime  @default(now()) @db.DateTime(0)
-  usuarios                usuarios? @relation(fields: [destinatario_usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_notif_user")
+  usuarios                usuarios? @relation(fields: [destinatario_usuario_id], references: [usuario_id], onDelete: Restrict, onUpdate: Restrict, map: "fk_notif_user")
 
   @@index([destinatario_rol], map: "idx_notif_dest_rol")
   @@index([destinatario_usuario_id], map: "idx_notif_dest_usuario")
@@ -136,6 +136,7 @@ model periodos {
   procesos_validaciones procesos_validaciones[]
   uic_asignaciones      uic_asignaciones[]
   uic_topics            uic_topics[]
+  veedor_assignments    veedor_assignments[]
 }
 
 model procesos_validaciones {
@@ -147,8 +148,8 @@ model procesos_validaciones {
   observacion           String?                       @db.VarChar(500)
   certificado_doc_id    Int?                          @db.UnsignedInt
   actualizado_en        DateTime                      @default(now()) @db.DateTime(0)
-  documentos            documentos?                   @relation(fields: [certificado_doc_id], references: [documento_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_proc_cert")
-  periodos              periodos                      @relation(fields: [periodo_id], references: [periodo_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_proc_per")
+  documentos            documentos?                   @relation(fields: [certificado_doc_id], references: [documento_id], onDelete: Restrict, onUpdate: Restrict, map: "fk_proc_cert")
+  periodos              periodos                      @relation(fields: [periodo_id], references: [periodo_id], onUpdate: Restrict, map: "fk_proc_per")
 
   @@unique([proceso, periodo_id, estudiante_id], map: "uq_proc_est")
   @@index([certificado_doc_id], map: "fk_proc_cert")
@@ -168,10 +169,10 @@ model uic_asignaciones {
   creado_en                                             DateTime                @default(now()) @db.DateTime(0)
   lector_nota                                           Decimal?                @db.Decimal(5, 2)
   lector_observacion                                    String?                 @db.VarChar(500)
-  documentos                                            documentos?             @relation(fields: [acta_doc_id], references: [documento_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_uic_acta_doc")
-  usuarios_uic_asignaciones_lector_usuario_idTousuarios usuarios?               @relation("uic_asignaciones_lector_usuario_idTousuarios", fields: [lector_usuario_id], references: [usuario_id], onUpdate: NoAction, map: "fk_uic_lector")
-  periodos                                              periodos                @relation(fields: [periodo_id], references: [periodo_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_uic_per")
-  usuarios_uic_asignaciones_tutor_usuario_idTousuarios  usuarios?               @relation("uic_asignaciones_tutor_usuario_idTousuarios", fields: [tutor_usuario_id], references: [usuario_id], onUpdate: NoAction, map: "fk_uic_tutor")
+  documentos                                            documentos?             @relation(fields: [acta_doc_id], references: [documento_id], onDelete: Restrict, onUpdate: Restrict, map: "fk_uic_acta_doc")
+  usuarios_uic_asignaciones_lector_usuario_idTousuarios usuarios?               @relation("uic_asignaciones_lector_usuario_idTousuarios", fields: [lector_usuario_id], references: [usuario_id], onUpdate: Restrict, map: "fk_uic_lector")
+  periodos                                              periodos                @relation(fields: [periodo_id], references: [periodo_id], onUpdate: Restrict, map: "fk_uic_per")
+  usuarios_uic_asignaciones_tutor_usuario_idTousuarios  usuarios?               @relation("uic_asignaciones_tutor_usuario_idTousuarios", fields: [tutor_usuario_id], references: [usuario_id], onUpdate: Restrict, map: "fk_uic_tutor")
   uic_tribunal_miembros                                 uic_tribunal_miembros[]
   uic_tutor_notas                                       uic_tutor_notas[]
 
@@ -188,8 +189,8 @@ model uic_tribunal_miembros {
   uic_asignacion_id       Int                                @db.UnsignedInt
   docente_usuario_id      Int                                @db.UnsignedInt
   rol_tribunal            uic_tribunal_miembros_rol_tribunal
-  uic_asignaciones        uic_asignaciones                   @relation(fields: [uic_asignacion_id], references: [uic_asignacion_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_uictrib_asig")
-  usuarios                usuarios                           @relation(fields: [docente_usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_uictrib_doc")
+  uic_asignaciones        uic_asignaciones                   @relation(fields: [uic_asignacion_id], references: [uic_asignacion_id], onUpdate: Restrict, map: "fk_uictrib_asig")
+  usuarios                usuarios                           @relation(fields: [docente_usuario_id], references: [usuario_id], onUpdate: Restrict, map: "fk_uictrib_doc")
 
   @@index([docente_usuario_id], map: "fk_uictrib_doc")
   @@index([uic_asignacion_id], map: "idx_uictrib_asig")
@@ -202,7 +203,7 @@ model uic_tutor_notas {
   nota              Decimal          @db.Decimal(5, 2)
   observacion       String?          @db.VarChar(500)
   fecha_registro    DateTime         @default(now()) @db.DateTime(0)
-  uic_asignaciones  uic_asignaciones @relation(fields: [uic_asignacion_id], references: [uic_asignacion_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_uicnota_asig")
+  uic_asignaciones  uic_asignaciones @relation(fields: [uic_asignacion_id], references: [uic_asignacion_id], onUpdate: Restrict, map: "fk_uicnota_asig")
 
   @@unique([uic_asignacion_id, parcial], map: "uq_uicnota")
 }
@@ -210,8 +211,8 @@ model uic_tutor_notas {
 model usuario_roles {
   usuario_id Int      @db.UnsignedInt
   rol_id     Int      @db.UnsignedInt
-  roles      roles    @relation(fields: [rol_id], references: [rol_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_ur_rol")
-  usuarios   usuarios @relation(fields: [usuario_id], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_ur_usuario")
+  roles      roles    @relation(fields: [rol_id], references: [rol_id], onUpdate: Restrict, map: "fk_ur_rol")
+  usuarios   usuarios @relation(fields: [usuario_id], references: [usuario_id], onUpdate: Restrict, map: "fk_ur_usuario")
 
   @@id([usuario_id, rol_id])
   @@index([rol_id], map: "fk_ur_rol")
@@ -237,6 +238,7 @@ model usuarios {
   uic_topics_uic_topics_id_userTousuarios                       uic_topics[]            @relation("uic_topics_id_userTousuarios")
   uic_tribunal_miembros                                         uic_tribunal_miembros[]
   usuario_roles                                                 usuario_roles[]
+  veedor_assignments                                            veedor_assignments[]
 }
 
 model academic_grades {
@@ -276,13 +278,28 @@ model uic_topics {
   submitted_at                           DateTime          @default(now()) @db.DateTime(0)
   updated_at                             DateTime          @default(now()) @db.DateTime(0)
   status                                 uic_topics_status @default(pending)
-  periodos                               periodos          @relation(fields: [id_academic_periods], references: [periodo_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_uic_topics_period")
-  usuarios_uic_topics_id_tutorTousuarios usuarios          @relation("uic_topics_id_tutorTousuarios", fields: [id_tutor], references: [usuario_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_uic_topics_tutor")
-  usuarios_uic_topics_id_userTousuarios  usuarios          @relation("uic_topics_id_userTousuarios", fields: [id_user], references: [usuario_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_uic_topics_user")
+  periodos                               periodos          @relation(fields: [id_academic_periods], references: [periodo_id], onDelete: Cascade, onUpdate: Restrict, map: "fk_uic_topics_period")
+  usuarios_uic_topics_id_tutorTousuarios usuarios          @relation("uic_topics_id_tutorTousuarios", fields: [id_tutor], references: [usuario_id], onUpdate: Restrict, map: "fk_uic_topics_tutor")
+  usuarios_uic_topics_id_userTousuarios  usuarios          @relation("uic_topics_id_userTousuarios", fields: [id_user], references: [usuario_id], onDelete: Cascade, onUpdate: Restrict, map: "fk_uic_topics_user")
 
   @@unique([id_user, id_academic_periods], map: "uq_user_period")
   @@index([id_academic_periods], map: "fk_uic_topics_period")
   @@index([id_tutor], map: "fk_uic_topics_tutor")
+}
+
+model veedor_assignments {
+  id                  Int      @id @default(autoincrement()) @db.UnsignedInt
+  id_academic_periods Int      @db.UnsignedInt
+  id_career           Int      @db.UnsignedInt
+  id_user             Int      @db.UnsignedInt
+  created_at          DateTime @default(now()) @db.DateTime(0)
+  periodos            periodos @relation(fields: [id_academic_periods], references: [periodo_id], onUpdate: NoAction, map: "fk_veedor_period")
+  usuarios            usuarios @relation(fields: [id_user], references: [usuario_id], onUpdate: NoAction, map: "fk_veedor_user")
+
+  @@unique([id_academic_periods, id_career, id_user], map: "uq_veedor_period_career_user")
+  @@index([id_career], map: "idx_veedor_career")
+  @@index([id_academic_periods], map: "idx_veedor_period")
+  @@index([id_user], map: "idx_veedor_user")
 }
 
 enum procesos_validaciones_proceso {

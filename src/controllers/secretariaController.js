@@ -1,6 +1,13 @@
 const { z } = require("zod");
+const prisma = require("../../prisma/client");
 const secretariaService = require("../services/secretariaService");
 const viewsDao = require("../daos/viewsDao");
+let settingsService;
+try {
+  settingsService = require("../services/settingsService");
+} catch (_) {
+  settingsService = require("./settingsService");
+}
 
 async function generarCertNotas(req, res, next) {
   try {
@@ -26,13 +33,13 @@ async function generarCertNotas(req, res, next) {
     res.status(201).json(result);
   } catch (err) {
     if (err.name === "ZodError") {
-      err.status = 400; err.message = err.errors.map(e=>e.message).join(", ");
+      err.status = 400; err.message = err.errors.map(e => e.message).join(", ");
     }
     next(err);
   }
 }
 
-module.exports = { generarCertNotas };
+module.exports.generarCertNotas = generarCertNotas;
 
 async function listPromedios(req, res, next) {
   try {
@@ -41,50 +48,38 @@ async function listPromedios(req, res, next) {
     const offset = (Math.max(1, Number(page)) - 1) * Math.max(1, Number(pageSize));
     const limit = Math.max(1, Number(pageSize));
 
-    // Último período local (para validaciones persistentes)
-    const prisma = require('../../prisma/client');
-    const lastPeriod = await prisma.periodos.findFirst({ orderBy: { periodo_id: 'desc' }, select: { periodo_id: true } });
+    // Período local activo (para validaciones persistentes)
+    const active = await settingsService.getActivePeriod();
+    const id_local_periodo = Number(active?.id_academic_periods);
     const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
-    const id_local_periodo = lastPeriod?.periodo_id;
     if (!Number.isFinite(Number(id_local_periodo))) return res.json({ data: [], pagination: { page: Number(page), pageSize: limit } });
 
-    // Último período del instituto (automático)
-    const extPerRows = await prisma.$queryRawUnsafe(
-      `SELECT ID_PERIODO AS id FROM ${EXT_SCHEMA}.MATRICULACION_PERIODO ORDER BY ID_PERIODO DESC LIMIT 1`
-    );
-    const extPerRow = Array.isArray(extPerRows) && extPerRows[0] ? extPerRows[0] : null;
-    const id_ext_periodo = extPerRow ? Number(extPerRow.id) : null;
+    // Período externo asociado al período local activo (sin fallback)
+    let id_ext_periodo = null;
+    try {
+      const rows = await prisma.$queryRawUnsafe(
+        'SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1',
+        `external_period_for_${Number(id_local_periodo)}`
+      );
+      const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+      const rawVal = row ? row.setting_value : null;
+      const val = rawVal ? (typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal) : null;
+      const extId = Number(val?.external_period_id);
+      if (Number.isFinite(extId)) id_ext_periodo = extId;
+    } catch (_) {
+      // ignorar
+    }
     if (!Number.isFinite(Number(id_ext_periodo))) return res.json({ data: [], pagination: { page: Number(page), pageSize: limit } });
 
-    // Estudiantes del último período del instituto (paginado)
-    const baseRows = await prisma.$queryRawUnsafe(
-      `
-        SELECT
-          u.ID_USUARIOS AS estudiante_id,
-          CONCAT(u.NOMBRES_USUARIOS,' ',u.APELLIDOS_USUARIOS) AS nombre,
-          c.NOMBRE_CARRERAS AS carrera
-        FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me
-        JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
-          ON u.DOCUMENTO_USUARIOS = me.DOCUMENTO_ESTUDIANTES
-        LEFT JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS c
-          ON c.ID_CARRERAS = u.ID_CARRERA
-        WHERE me.ID_PERIODO_ESTUDIANTES = ?
-          AND (u.STATUS_USUARIOS='ACTIVO' OR u.STATUS_USUARIOS IS NULL)
-        ORDER BY nombre ASC
-        LIMIT ?, ?
-      `,
-      Number(id_ext_periodo),
-      Number(offset),
-      Number(limit)
-    );
-    const base = Array.isArray(baseRows) ? baseRows : [];
-    const idsPage = base.map(r => Number(r.estudiante_id)).filter(Number.isFinite);
+    // Estudiantes con TODO aprobado (según regla por carrera) en el período mapeado
+    const base = await viewsDao.getNotasResumenAprobadosByPeriodo({ external_period_id: Number(id_ext_periodo), offset, limit });
+    const idsPage = (base || []).map(r => Number(r.estudiante_id)).filter(Number.isFinite);
     if (!idsPage.length) return res.json({ data: [], pagination: { page: Number(page), pageSize: limit } });
 
     // Estado de Secretaría (validación) en el último período local
     const secVals = await prisma.procesos_validaciones.findMany({
       where: { proceso: 'secretaria_promedios', periodo_id: Number(id_local_periodo), estudiante_id: { in: idsPage } },
-      select: { estudiante_id: true, estado: true }
+      select: { estudiante_id: true, estado: true, certificado_doc_id: true }
     });
     const normalizeEstado = (s) => {
       const v = String(s || '').toLowerCase();
@@ -92,70 +87,67 @@ async function listPromedios(req, res, next) {
       if (v === 'rejected') return 'rechazado';
       return 'pendiente';
     };
-    const secMap = new Map((secVals || []).map(v => [Number(v.estudiante_id), normalizeEstado(v.estado)]));
+    const normDocId = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const secMap = new Map((secVals || []).map(v => [Number(v.estudiante_id), { estado: normalizeEstado(v.estado), certificado_doc_id: normDocId(v.certificado_doc_id) }]));
 
-    // Notas detalle por estudiante desde DAO (vista externa)
-    const rows = [];
-    for (const r of base) {
-      // eslint-disable-next-line no-await-in-loop
-      const notas = await viewsDao.getNotasEstudiante(Number(r.estudiante_id)).catch(() => null);
-      rows.push({
-        estudiante_id: Number(r.estudiante_id),
-        nombre: String(r.nombre || '').trim(),
-        carrera: String(r.carrera || '').trim(),
-        s1: notas?.s1 ?? null,
-        s2: notas?.s2 ?? null,
-        s3: notas?.s3 ?? null,
-        s4: notas?.s4 ?? null,
-        s5: notas?.s5 ?? null,
-        promedio_general: notas?.promedio_general ?? null,
-        estado: secMap.get(Number(r.estudiante_id)) || 'pendiente',
-      });
-    }
+    const toNumOrNull = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const rows = (base || []).map(r => ({
+      estudiante_id: Number(r.estudiante_id),
+      nombre: String(r.nombre || '').trim(),
+      carrera: String(r.carrera || '').trim(),
+      s1: toNumOrNull(r.s1),
+      s2: toNumOrNull(r.s2),
+      s3: toNumOrNull(r.s3),
+      s4: toNumOrNull(r.s4),
+      s5: toNumOrNull(r.s5),
+      promedio_general: toNumOrNull(r.promedio_general),
+      estado: (secMap.get(Number(r.estudiante_id))?.estado) || 'pendiente',
+      certificado_doc_id: (secMap.get(Number(r.estudiante_id))?.certificado_doc_id) ?? null,
+    }));
 
     res.json({ data: rows, pagination: { page: Number(page), pageSize: limit } });
-  } catch (err) { if (err.name === 'ZodError') { err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 async function getPromediosById(req, res, next) {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) { const e=new Error('ID inválido'); e.status=400; throw e; }
+    if (!Number.isFinite(id)) { const e = new Error('ID inválido'); e.status = 400; throw e; }
 
-    const prisma = require('../../prisma/client');
     const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
-    const lastPeriod = await prisma.periodos.findFirst({ orderBy: { periodo_id: 'desc' }, select: { periodo_id: true } });
-    const id_local_periodo = lastPeriod?.periodo_id;
-    if (!Number.isFinite(Number(id_local_periodo))) { const e = new Error('No hay períodos registrados'); e.status = 400; throw e; }
 
-    // Confirmar que el estudiante pertenece al último período del instituto
-    const extPerRows = await prisma.$queryRawUnsafe(
-      `SELECT ID_PERIODO AS id FROM ${EXT_SCHEMA}.MATRICULACION_PERIODO ORDER BY ID_PERIODO DESC LIMIT 1`
-    );
-    const extPerRow = Array.isArray(extPerRows) && extPerRows[0] ? extPerRows[0] : null;
-    const id_ext_periodo = extPerRow ? Number(extPerRow.id) : null;
-    if (!Number.isFinite(Number(id_ext_periodo))) { const e = new Error('No hay períodos registrados en el instituto'); e.status = 400; throw e; }
+    // Período local activo
+    const active = await settingsService.getActivePeriod();
+    const id_local_periodo = Number(active?.id_academic_periods);
+    if (!Number.isFinite(Number(id_local_periodo))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
 
-    const baseRows = await prisma.$queryRawUnsafe(
-      `
-        SELECT
-          u.ID_USUARIOS AS estudiante_id,
-          CONCAT(u.NOMBRES_USUARIOS,' ',u.APELLIDOS_USUARIOS) AS nombre,
-          c.NOMBRE_CARRERAS AS carrera
-        FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me
-        JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
-          ON u.DOCUMENTO_USUARIOS = me.DOCUMENTO_ESTUDIANTES
-        LEFT JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS c
-          ON c.ID_CARRERAS = u.ID_CARRERA
-        WHERE me.ID_PERIODO_ESTUDIANTES = ?
-          AND u.ID_USUARIOS = ?
-        LIMIT 1
-      `,
-      Number(id_ext_periodo),
-      Number(id)
-    );
-    const base = Array.isArray(baseRows) ? baseRows[0] : null;
-    if (!base) { const e = new Error('Estudiante no pertenece al último período del instituto'); e.status = 404; throw e; }
+    // Período externo asociado al período local activo
+    let id_ext_periodo = null;
+    try {
+      const rows = await prisma.$queryRawUnsafe(
+        'SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1',
+        `external_period_for_${Number(id_local_periodo)}`
+      );
+      const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+      const rawVal = row ? row.setting_value : null;
+      const val = rawVal ? (typeof rawVal === 'string' ? JSON.parse(rawVal) : rawVal) : null;
+      const extId = Number(val?.external_period_id);
+      if (Number.isFinite(extId)) id_ext_periodo = extId;
+    } catch (_) {
+      // ignorar
+    }
+
+    if (!Number.isFinite(Number(id_ext_periodo))) { const e = new Error('No hay período asociado al active_period'); e.status = 400; throw e; }
+
+    const base = await viewsDao.getNotasResumenAprobadosByPeriodoById({ external_period_id: Number(id_ext_periodo), estudiante_id: Number(id) });
+    if (!base) { const e = new Error('Estudiante no cumple requisitos de aprobación en el período activo'); e.status = 404; throw e; }
 
     const normalizeEstado = (s) => {
       const v = String(s || '').toLowerCase();
@@ -165,21 +157,29 @@ async function getPromediosById(req, res, next) {
     };
     const secVal = await prisma.procesos_validaciones.findFirst({
       where: { proceso: 'secretaria_promedios', periodo_id: Number(id_local_periodo), estudiante_id: Number(id) },
-      select: { estado: true }
+      select: { estado: true, certificado_doc_id: true }
     });
-    const notas = await viewsDao.getNotasEstudiante(Number(id)).catch(() => null);
-
+    const normDocId = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const toNumOrNull = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
     res.json({
       estudiante_id: Number(base.estudiante_id),
       nombre: String(base.nombre || '').trim(),
       carrera: String(base.carrera || '').trim(),
-      s1: notas?.s1 ?? null,
-      s2: notas?.s2 ?? null,
-      s3: notas?.s3 ?? null,
-      s4: notas?.s4 ?? null,
-      s5: notas?.s5 ?? null,
-      promedio_general: notas?.promedio_general ?? null,
+      s1: toNumOrNull(base.s1),
+      s2: toNumOrNull(base.s2),
+      s3: toNumOrNull(base.s3),
+      s4: toNumOrNull(base.s4),
+      s5: toNumOrNull(base.s5),
+      promedio_general: toNumOrNull(base.promedio_general),
       estado: normalizeEstado(secVal?.estado),
+      certificado_doc_id: normDocId(secVal?.certificado_doc_id),
     });
   } catch (err) { next(err); }
 }
@@ -217,7 +217,7 @@ async function approve(req, res, next) {
       });
     } catch (_) { /* no bloquear */ }
     res.json(updated);
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 async function reject(req, res, next) {
@@ -238,7 +238,7 @@ async function reject(req, res, next) {
       });
     } catch (_) { /* no bloquear */ }
     res.json(updated);
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 module.exports.approve = approve;
@@ -250,7 +250,7 @@ async function reconsider(req, res, next) {
     const { periodo_id, estudiante_id } = schema.parse(req.body || {});
     const updated = await secretariaService.reconsiderar({ periodo_id, estudiante_id });
     res.json(updated);
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 module.exports.reconsider = reconsider;
@@ -281,7 +281,7 @@ async function actaLista(req, res, next) {
       });
     } catch (_) { /* no bloquear */ }
     res.json({ ok: true });
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 async function actaFirmada(req, res, next) {
@@ -324,7 +324,7 @@ async function actaFirmada(req, res, next) {
       });
     } catch (_) { /* no bloquear */ }
     res.json({ ok: true });
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 module.exports.actaLista = actaLista;
@@ -388,7 +388,7 @@ async function listActas(req, res, next) {
         calificacionTribunal: a.nota_tribunal != null ? Number(a.nota_tribunal) : null,
         hojaCargada: Number.isFinite(Number(a.acta_doc_id))
       };
-    }).sort((x,y)=> String(x.estudiante).localeCompare(String(y.estudiante)));
+    }).sort((x, y) => String(x.estudiante).localeCompare(String(y.estudiante)));
 
     res.json(data);
   } catch (err) { next(err); }
@@ -401,18 +401,18 @@ async function saveNotaTribunal(req, res, next) {
     const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
     const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
     const id_ap = per?.id_academic_periods;
-    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
     await prisma.uic_asignaciones.update({
       where: { periodo_id_estudiante_id: { periodo_id: Number(id_ap), estudiante_id: Number(id_user_student) } },
       data: { nota_tribunal: Number(score) }
     });
     res.json({ ok: true });
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 async function generateHoja(req, res, next) {
   try {
-    let PDFDocument; try { PDFDocument = require('pdfkit'); } catch (_) { const err=new Error('Generación de PDF no disponible. Instala la dependencia: npm i pdfkit'); err.status=501; throw err; }
+    let PDFDocument; try { PDFDocument = require('pdfkit'); } catch (_) { const err = new Error('Generación de PDF no disponible. Instala la dependencia: npm i pdfkit'); err.status = 501; throw err; }
     const schema = z.object({ id_user_student: z.coerce.number().int() });
     const { id_user_student } = schema.parse(req.body || {});
     // Datos básicos del estudiante (nombre) y tribunal
@@ -430,7 +430,7 @@ async function generateHoja(req, res, next) {
     doc.text('- __________________________');
     doc.text('- __________________________');
     doc.end();
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 async function linkHoja(req, res, next) {
@@ -440,13 +440,13 @@ async function linkHoja(req, res, next) {
     const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
     const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
     const id_ap = per?.id_academic_periods;
-    if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
     await prisma.uic_asignaciones.update({
       where: { periodo_id_estudiante_id: { periodo_id: Number(id_ap), estudiante_id: Number(id_user_student) } },
       data: { acta_doc_id: Number(documento_id) }
     });
     res.json({ ok: true });
-  } catch (err) { if (err.name === 'ZodError'){ err.status=400; err.message=err.errors.map(e=>e.message).join(', ');} next(err); }
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
 module.exports.listActas = listActas;

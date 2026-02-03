@@ -10,12 +10,7 @@ async function listMy(req, res, next) {
     if (!id_user) {
       return res.status(200).json([]);
     }
-    // Obtener los nombres de roles del usuario para incluir notificaciones por rol
-    const roleRows = await prisma.usuario_roles.findMany({
-      where: { usuario_id: id_user },
-      select: { roles: { select: { nombre: true } } }
-    });
-    const roleNames = roleRows.map(r => r.roles?.nombre).filter(Boolean);
+    const roleNames = Array.isArray(req.user?.roles) ? req.user.roles : [];
     const data = await svc.listMy({ id_user, roles: roleNames, onlyUnread, page, pageSize });
     res.json(data);
   } catch(e){

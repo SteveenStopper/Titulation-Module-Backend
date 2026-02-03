@@ -1,16 +1,32 @@
 const prisma = require("../../prisma/client");
 
+function safeSchemaName(name) {
+  const s = String(name || '').trim();
+  return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+}
+
 async function getStudentCareerId(estudianteId) {
   // La carrera del estudiante vive en el esquema externo (SIGALA). Lo usamos para persistir modalidades_elegidas.carrera_id
   // para que otros módulos (UIC/Complexivo) puedan filtrar por carrera.
-  const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+  const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
   const id = Number(estudianteId);
   if (!Number.isFinite(id)) return null;
   try {
-    const rows = await prisma.$queryRawUnsafe(
-      `SELECT ID_CARRERA AS carrera_id FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS WHERE ID_USUARIOS = ? LIMIT 1`,
-      id
-    );
+    const sql = `
+      SELECT
+        fc.ID_CARRERA_FORMAR_CURSOS AS carrera_id
+      FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
+      JOIN ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me
+        ON REPLACE(REPLACE(u.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(me.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
+      JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA mm
+        ON mm.ID_ESTUDIANTE_MATRICULA = me.ID_ESTUDIANTES
+      JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc
+        ON fc.ID_FORMAR_CURSOS = mm.ID_FORMAR_CURSOS_MATRICULA
+      WHERE u.ID_USUARIOS = ?
+      ORDER BY mm.ID_PERIODO_MATRICULA DESC
+      LIMIT 1
+    `;
+    const rows = await prisma.$queryRawUnsafe(sql, Number(id));
     const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
     const cid = row ? Number(row.carrera_id) : null;
     return Number.isFinite(cid) ? cid : null;
@@ -61,7 +77,7 @@ async function selectModality({ id_user, academicPeriodId, modality }) {
   if (existing?.modalidad_elegida_id) {
     await prisma.modalidades_elegidas.update({
       where: { modalidad_elegida_id: Number(existing.modalidad_elegida_id) },
-      data: { modalidad: modality },
+      data: { modalidad: modality, carrera_id: Number(carrera_id) },
       select: { modalidad_elegida_id: true },
     });
   } else {
@@ -108,4 +124,4 @@ async function setStatus({ id, status }) {
   return { id: Number(id), status };
 }
 
-module.exports = { selectModality, getCurrentSelection, list, setStatus };
+module.exports = { getStudentCareerId, selectModality, getCurrentSelection, list, setStatus };

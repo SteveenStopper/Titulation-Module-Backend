@@ -1,7 +1,7 @@
 const cors = require('cors');
 
 const allowedOrigins = [
-  'http://localhost:4200', // Angular
+  'http://localhost:4200',
   'https://titulacion.istla-sigala.edu.ec',
 ];
 

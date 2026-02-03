@@ -11,6 +11,7 @@ router.post("/attendance", ctrl.addAttendance);
 router.get("/courses", ctrl.listCourses);
 router.get("/courses/:courseId/teachers", ctrl.listCourseTeachers);
 router.get("/veedores", ctrl.listVeedores);
+router.get("/docentes", authorize('Coordinador','Administrador'), ctrl.listDocentesInstituto);
 router.post("/veedores/assign", authorize('Coordinador','Administrador'), ctrl.assignVeedor);
 router.put("/veedores/set", authorize('Coordinador','Administrador'), ctrl.setVeedores);
 

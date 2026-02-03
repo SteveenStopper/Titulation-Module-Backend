@@ -42,7 +42,7 @@ async function enforcePeriodExpirations() {
     if (!Number.isFinite(id)) return;
     const per = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { fecha_fin: true, estado: true } });
     if (per && per.fecha_fin && per.fecha_fin < today) {
-      await prisma.$executeRawUnsafe('DELETE FROM app_settings WHERE setting_key = ?','active_period');
+      await prisma.$executeRawUnsafe('DELETE FROM app_settings WHERE setting_key = ?', 'active_period');
       // Asegurar que no quede marcado activo
       await prisma.periodos.updateMany({ where: { periodo_id: id, estado: 'activo' }, data: { estado: 'cerrado' } });
     }
@@ -64,25 +64,25 @@ async function ensureAppSettingsTable() {
 // Actualizar un período académico (nombre/fechas/estado)
 async function updatePeriod({ id_academic_periods, name, date_start, date_end, status }) {
   const id = Number(id_academic_periods);
-  if (!Number.isFinite(id)) { const e=new Error('id_academic_periods inválido'); e.status=400; throw e; }
+  if (!Number.isFinite(id)) { const e = new Error('id_academic_periods inválido'); e.status = 400; throw e; }
   const data = {};
   if (typeof name === 'string') data.nombre = name;
   if (date_start) data.fecha_inicio = new Date(date_start);
   if (date_end) data.fecha_fin = new Date(date_end);
   if (status) data.estado = status;
-  if (Object.keys(data).length === 0) return await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { periodo_id:true, nombre:true, fecha_inicio:true, fecha_fin:true, estado:true } });
-  const updated = await prisma.periodos.update({ where: { periodo_id: id }, data, select: { periodo_id:true, nombre:true, fecha_inicio:true, fecha_fin:true, estado:true } });
+  if (Object.keys(data).length === 0) return await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { periodo_id: true, nombre: true, fecha_inicio: true, fecha_fin: true, estado: true } });
+  const updated = await prisma.periodos.update({ where: { periodo_id: id }, data, select: { periodo_id: true, nombre: true, fecha_inicio: true, fecha_fin: true, estado: true } });
   // Si cambiamos el nombre y este período es el activo en app_settings, sincronizar el nombre en active_period
   if (typeof name === 'string' && name.trim()) {
     await ensureAppSettingsTable();
-    const rows = await prisma.$queryRawUnsafe('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1','active_period');
+    const rows = await prisma.$queryRawUnsafe('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', 'active_period');
     const setting = Array.isArray(rows) && rows.length ? rows[0] : null;
     if (setting) {
       try {
         const val = typeof setting.setting_value === 'string' ? JSON.parse(setting.setting_value) : setting.setting_value;
         if (Number(val?.id_academic_periods) === id) {
           const newVal = JSON.stringify({ id_academic_periods: id, name: String(updated.nombre) });
-          await prisma.$executeRawUnsafe('UPDATE app_settings SET setting_value = ? WHERE setting_key = ?',[newVal,'active_period']);
+          await prisma.$executeRawUnsafe('UPDATE app_settings SET setting_value = ? WHERE setting_key = ?', [newVal, 'active_period']);
         }
       } catch (_) { /* ignorar parseo */ }
     }
@@ -90,8 +90,8 @@ async function updatePeriod({ id_academic_periods, name, date_start, date_end, s
   return {
     id_academic_periods: Number(updated.periodo_id),
     name: String(updated.nombre),
-    date_start: updated.fecha_inicio ? updated.fecha_inicio.toISOString().slice(0,10) : null,
-    date_end: updated.fecha_fin ? updated.fecha_fin.toISOString().slice(0,10) : null,
+    date_start: updated.fecha_inicio ? updated.fecha_inicio.toISOString().slice(0, 10) : null,
+    date_end: updated.fecha_fin ? updated.fecha_fin.toISOString().slice(0, 10) : null,
     status: updated.estado || 'inactivo',
   };
 }
@@ -99,26 +99,26 @@ async function updatePeriod({ id_academic_periods, name, date_start, date_end, s
 // Cerrar un período: poner inactivo y, si era el activo en app_settings, limpiar active_period
 async function closePeriod(id_academic_periods) {
   const id = Number(id_academic_periods);
-  if (!Number.isFinite(id)) { const e=new Error('id_academic_periods inválido'); e.status=400; throw e; }
+  if (!Number.isFinite(id)) { const e = new Error('id_academic_periods inválido'); e.status = 400; throw e; }
   await prisma.periodos.updateMany({ where: { periodo_id: id }, data: { estado: 'inactivo' } });
   await ensureAppSettingsTable();
   // Leer active_period y eliminar si coincide
-  const rows = await prisma.$queryRawUnsafe('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1','active_period');
+  const rows = await prisma.$queryRawUnsafe('SELECT setting_value FROM app_settings WHERE setting_key = ? LIMIT 1', 'active_period');
   const setting = Array.isArray(rows) && rows.length ? rows[0] : null;
   if (setting) {
     try {
       const val = typeof setting.setting_value === 'string' ? JSON.parse(setting.setting_value) : setting.setting_value;
       if (Number(val?.id_academic_periods) === id) {
-        await prisma.$executeRawUnsafe('DELETE FROM app_settings WHERE setting_key = ?','active_period');
+        await prisma.$executeRawUnsafe('DELETE FROM app_settings WHERE setting_key = ?', 'active_period');
       }
     } catch (_) { /* ignorar parseo */ }
   }
-  const row = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { periodo_id:true, nombre:true, fecha_inicio:true, fecha_fin:true, estado:true } });
+  const row = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { periodo_id: true, nombre: true, fecha_inicio: true, fecha_fin: true, estado: true } });
   return row ? {
     id_academic_periods: Number(row.periodo_id),
     name: String(row.nombre),
-    date_start: row.fecha_inicio ? row.fecha_inicio.toISOString().slice(0,10) : null,
-    date_end: row.fecha_fin ? row.fecha_fin.toISOString().slice(0,10) : null,
+    date_start: row.fecha_inicio ? row.fecha_inicio.toISOString().slice(0, 10) : null,
+    date_end: row.fecha_fin ? row.fecha_fin.toISOString().slice(0, 10) : null,
     status: row.estado || 'inactivo',
   } : null;
 }
@@ -127,7 +127,7 @@ async function closePeriod(id_academic_periods) {
 async function clearActivePeriod() {
   await prisma.periodos.updateMany({ data: { estado: 'inactivo' } });
   await ensureAppSettingsTable();
-  await prisma.$executeRawUnsafe('DELETE FROM app_settings WHERE setting_key = ?','active_period');
+  await prisma.$executeRawUnsafe('DELETE FROM app_settings WHERE setting_key = ?', 'active_period');
   return { cleared: true };
 }
 
@@ -145,11 +145,11 @@ async function getActivePeriod() {
   return value || null;
 }
 
-async function setActivePeriod({ id_academic_periods, name }) {
+async function setActivePeriod({ id_academic_periods, name, external_period_id }) {
   const value = { id_academic_periods, name };
   const valueStr = JSON.stringify(value);
   const id = Number(id_academic_periods);
-  if (!Number.isFinite(id)) { const e=new Error('id_academic_periods inválido'); e.status=400; throw e; }
+  if (!Number.isFinite(id)) { const e = new Error('id_academic_periods inválido'); e.status = 400; throw e; }
   await enforcePeriodExpirations();
   const perCheck = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { fecha_fin: true } });
   if (perCheck?.fecha_fin && perCheck.fecha_fin < startOfToday()) {
@@ -161,7 +161,7 @@ async function setActivePeriod({ id_academic_periods, name }) {
     const result = await prisma.$transaction(async (tx) => {
       const r1 = await tx.periodos.updateMany({ data: { estado: 'inactivo' } });
       const r2 = await tx.periodos.updateMany({ where: { periodo_id: id }, data: { estado: 'activo' } });
-      if (!r2 || !r2.count) { const e=new Error('Período no encontrado para activar'); e.status=404; throw e; }
+      if (!r2 || !r2.count) { const e = new Error('Período no encontrado para activar'); e.status = 404; throw e; }
       return { inactivos: r1.count || 0, activados: r2.count || 0 };
     });
     // Upsert manual vía SQL fuera de la transacción para compatibilidad con versiones sin RAW en TransactionClient
@@ -171,17 +171,15 @@ async function setActivePeriod({ id_academic_periods, name }) {
       'active_period', valueStr
     );
 
-    // Guardar el último período del instituto para este período local
-    try {
-      const extPeriodId = await getLatestExternalPeriodId();
-      if (Number.isFinite(Number(extPeriodId))) {
-        await prisma.$executeRawUnsafe(
-          'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
-          `external_period_for_${id}`, JSON.stringify({ external_period_id: Number(extPeriodId) })
-        );
-      }
-    } catch (_) {
-      // no bloquear activación
+    // Guardar (si viene) el período externo seleccionado del instituto para este período local.
+    // IMPORTANTE: no sobreescribir automáticamente con el "último" período del instituto.
+    if (external_period_id !== undefined && external_period_id !== null && external_period_id !== '') {
+      const extId = Number(external_period_id);
+      if (!Number.isFinite(extId)) { const e = new Error('external_period_id inválido'); e.status = 400; throw e; }
+      await prisma.$executeRawUnsafe(
+        'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
+        `external_period_for_${id}`, JSON.stringify({ external_period_id: extId })
+      );
     }
 
     return { ...value, meta: result };
@@ -202,8 +200,8 @@ async function listAllPeriods() {
   return rows.map(r => ({
     id_academic_periods: Number(r.periodo_id),
     name: String(r.nombre),
-    date_start: r.fecha_inicio ? r.fecha_inicio.toISOString().slice(0,10) : null,
-    date_end: r.fecha_fin ? r.fecha_fin.toISOString().slice(0,10) : null,
+    date_start: r.fecha_inicio ? r.fecha_inicio.toISOString().slice(0, 10) : null,
+    date_end: r.fecha_fin ? r.fecha_fin.toISOString().slice(0, 10) : null,
     status: r.estado || 'inactivo',
   }));
 }
@@ -257,6 +255,21 @@ async function setFeatureFlags(flags) {
   return value;
 }
 
+function safeSchemaName(schema) {
+  const s = String(schema || '').trim();
+  return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+}
+
+async function listInstitutePeriods() {
+  const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT ID_PERIODO AS id, NOMBRE_PERIODO AS name, STATUS_PERIODO AS status
+     FROM ${EXT_SCHEMA}.MATRICULACION_PERIODO
+     ORDER BY ID_PERIODO DESC`
+  );
+  return Array.isArray(rows) ? rows : [];
+}
+
 module.exports = {
   getActivePeriod,
   setActivePeriod,
@@ -267,5 +280,5 @@ module.exports = {
   clearActivePeriod,
   getFeatureFlags,
   setFeatureFlags,
+  listInstitutePeriods,
 };
-

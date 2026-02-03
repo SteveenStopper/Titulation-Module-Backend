@@ -5,7 +5,7 @@ const logger = require('./src/utils/logger');
 const { setupGracefulShutdown } = require('./src/utils/shutdown');
 
 const app = require('./src/app');
-const port = process.env.PORT || 3000; // Puerto
+const port = process.env.PORT || 3333; // Puerto
 
 if (require.main === module) {
   const server = app.listen(port, () => {

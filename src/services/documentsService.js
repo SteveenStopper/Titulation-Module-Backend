@@ -72,7 +72,7 @@ async function listDocuments(query) {
   ];
   const tiposMatricula = [
     'solicitud', 'oficio', 'uic_final', 'uic_acta_tribunal',
-    'cert_tesoreria', 'cert_secretaria', 'cert_vinculacion', 'cert_ingles', 'cert_practicas',
+    'cert_vinculacion', 'cert_ingles', 'cert_practicas',
   ];
 
   const where = {
@@ -88,6 +88,13 @@ async function listDocuments(query) {
     } else if (category === 'pagos') {
       where.tipo = { in: tiposComprobantes };
     }
+  }
+
+  // Excluir certificados auto-generados (Secretaría/Tesorería) del listado de Matrícula
+  if (category === 'matricula') {
+    where.tipo = where.tipo
+      ? { ...where.tipo, notIn: ['cert_secretaria', 'cert_tesoreria'] }
+      : { notIn: ['cert_secretaria', 'cert_tesoreria'] };
   }
 
   // Period-scoping by date range for period-sensitive categories.
@@ -122,12 +129,16 @@ async function listDocuments(query) {
         creado_en: true,
         usuario_id: true,
         estudiante_id: true,
+        usuarios: { select: { usuario_id: true, nombre: true, apellido: true } },
       },
     }),
   ]);
 
   return {
-    data,
+    data: (data || []).map(d => ({
+      ...d,
+      users: d.usuarios ? { id_user: d.usuarios.usuario_id, firstname: d.usuarios.nombre, lastname: d.usuarios.apellido } : null,
+    })),
     pagination: {
       page,
       pageSize,
@@ -220,7 +231,7 @@ async function updateDocument(id, payload) {
   if (payload.estudiante_id !== undefined) data.estudiante_id = Number(payload.estudiante_id);
   if (payload.estado !== undefined || payload.status !== undefined) {
     const st = String(payload.estado ?? payload.status);
-    if (!['en_revision','aprobado','rechazado'].includes(st)) {
+    if (!['en_revision', 'aprobado', 'rechazado'].includes(st)) {
       const err = new Error("estado inválido");
       err.status = 400;
       throw err;
@@ -254,7 +265,7 @@ async function updateDocument(id, payload) {
 
 async function setStatus(id, estado, observacion) {
   const st = String(estado);
-  if (!['en_revision','aprobado','rechazado'].includes(st)) {
+  if (!['en_revision', 'aprobado', 'rechazado'].includes(st)) {
     const err = new Error('estado inválido');
     err.status = 400;
     throw err;
