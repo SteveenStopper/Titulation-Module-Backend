@@ -393,6 +393,7 @@ module.exports = {
   createVoucher,
   updateVoucher,
   deleteVoucher,
+  getCareerMapForUserIds,
   setStatus,
 };
 

@@ -140,27 +140,12 @@ router.get('/admin/asignaciones/tribunal', authorize('Coordinador','Administrado
     ].filter(x => Number.isFinite(Number(x)))));
     const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: userIds } }, select: { usuario_id: true, nombre: true, apellido: true } });
     const nameMap = new Map(usuarios.map(u => [u.usuario_id, `${u.nombre} ${u.apellido}`.trim()]));
-
-    // nombres carrera (instituto)
-    let careerNameMap = {};
-    try {
-      const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
-      const careerIds = Array.from(new Set(topics.map(m => m.carrera_id).filter((x)=>Number.isFinite(Number(x)))));
-      if (careerIds.length > 0) {
-        const inList = careerIds.join(',');
-        const rows = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`);
-        if (Array.isArray(rows)) for (const r of rows) careerNameMap[Number(r.id)] = String(r.nombre);
-      }
-    } catch (_) { careerNameMap = {}; }
-
-    const modCareerMap = new Map(topics.map(m => [Number(m.id_user), Number(m.carrera_id)]));
     const data = asigns.map(a => {
-      const cid = modCareerMap.get(Number(a.id_user_student));
       return {
         id_user: Number(a.id_user_student),
         fullname: nameMap.get(Number(a.id_user_student)) || `Usuario ${a.id_user_student}`,
-        career_id: Number.isFinite(Number(cid)) ? Number(cid) : null,
-        career_name: Number.isFinite(Number(cid)) ? (careerNameMap[Number(cid)] || null) : null,
+        career_id: Number.isFinite(Number(careerId)) ? Number(careerId) : null,
+        career_name: topicCareerMap.get(Number(a.id_user_student)) || null,
         presidente: nameMap.get(Number(a.id_president)) || null,
         secretario: nameMap.get(Number(a.id_secretary)) || null,
         vocal: nameMap.get(Number(a.id_vocal)) || null,

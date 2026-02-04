@@ -1,4 +1,5 @@
 const prisma = require("../../prisma/client");
+const vouchersService = require("./vouchersService");
 
 async function getActivePeriodId() {
   const setting = await prisma.app_settings.findUnique({ where: { setting_key: "active_period" } });
@@ -20,6 +21,19 @@ async function listEligible({ academicPeriodId }) {
     where: { usuario_id: { in: ids } },
     select: { usuario_id: true, nombre: true, apellido: true }
   });
+  const careerMap = await vouchersService.getCareerMapForUserIds(ids);
+  const certRows = await prisma.documentos.findMany({
+    where: { tipo: 'cert_vinculacion', estudiante_id: { in: ids.map(Number) } },
+    orderBy: { documento_id: 'desc' },
+    select: { documento_id: true, estudiante_id: true, ruta_archivo: true }
+  }).catch(() => []);
+  const certMap = new Map();
+  for (const r of (certRows || [])) {
+    const sid = Number(r.estudiante_id);
+    if (!Number.isFinite(sid) || certMap.has(sid)) continue;
+    const rel = r?.ruta_archivo ? String(r.ruta_archivo).replace(/\\/g, '/') : null;
+    certMap.set(sid, { documento_id: Number(r.documento_id), url: rel ? `/uploads/${rel.replace(/^uploads\//, '')}` : null });
+  }
   const grades = await prisma.academic_grades.findMany({
     where: { module: 'vinculacion', id_user: { in: ids }, id_academic_periods: id_ap },
     select: { grade_id: true, id_user: true, score: true, status: true }
@@ -27,9 +41,15 @@ async function listEligible({ academicPeriodId }) {
   const gmap = new Map(grades.map(g => [g.id_user, { id: g.grade_id, score: g.score, status: g.status }]));
   return users.map(u => {
     const g = gmap.get(u.usuario_id);
+    const career = careerMap.get(Number(u.usuario_id)) || null;
+    const cert = certMap.get(Number(u.usuario_id));
     return {
       id_user: u.usuario_id,
       fullname: `${u.nombre} ${u.apellido}`.trim(),
+      career,
+      career_name: career,
+      certificate_doc_id: cert?.documento_id ?? null,
+      certificate_url: cert?.url ?? null,
       score: g?.score ?? null,
       status: g?.status ?? null,
       grade_id: g?.id ?? null,

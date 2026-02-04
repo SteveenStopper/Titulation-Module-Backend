@@ -156,9 +156,11 @@ async function generateNotasCertificate({ studentId, academicPeriodId, issuerId 
     doc.y = Math.round(doc.page.height * 0.54);
 
     // Firma
-    doc.font('Helvetica').fontSize(11).text(issuerLabel, { align: 'center' });
-    doc.font('Helvetica-Bold').fontSize(10).text('SECRETARIA', { align: 'center' });
-    doc.font('Helvetica-Bold').fontSize(9).text('INSTITUTO SUPERIOR TECNOLÓGICO LOS ANDES', { align: 'center' });
+    const sigW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const sigX = doc.page.margins.left;
+    doc.font('Helvetica').fontSize(11).text(issuerLabel, sigX, doc.y, { width: sigW, align: 'center' });
+    doc.font('Helvetica-Bold').fontSize(10).text('SECRETARIA', sigX, doc.y, { width: sigW, align: 'center' });
+    doc.font('Helvetica-Bold').fontSize(9).text('INSTITUTO SUPERIOR TECNOLÓGICO LOS ANDES', sigX, doc.y, { width: sigW, align: 'center' });
 
     doc.end();
     out.on('finish', resolve);

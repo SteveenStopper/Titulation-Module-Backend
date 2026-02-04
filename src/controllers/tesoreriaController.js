@@ -74,11 +74,16 @@ async function downloadCertificateByDoc(req, res, next) {
   try {
     const docId = Number(req.params.docId);
     if (!Number.isFinite(docId)) { const e=new Error('ID inválido'); e.status=400; throw e; }
+    const inline = String(req.query?.inline || '').trim() === '1';
     const doc = await documentsService.getDocumentById(docId);
     if (!doc || !doc.ruta_archivo) { const e=new Error('Documento no encontrado'); e.status=404; throw e; }
     const abs = require('path').join(process.cwd(), doc.ruta_archivo);
     res.setHeader('Content-Type', doc.mime_type || 'application/pdf');
     const fname = doc.nombre_archivo || `certificado_${docId}.pdf`;
+    if (inline) {
+      res.setHeader('Content-Disposition', `inline; filename="${fname}"`);
+      return res.sendFile(abs);
+    }
     return res.download(abs, fname);
   } catch (err) { next(err); }
 }
@@ -88,6 +93,7 @@ async function downloadCertificateByStudent(req, res, next) {
     const estudiante_id = Number(req.params.estudiante_id);
     let periodo_id = req.query && req.query.periodo_id ? Number(req.query.periodo_id) : undefined;
     if (!Number.isFinite(estudiante_id)) { const e=new Error('estudiante_id inválido'); e.status=400; throw e; }
+    const inline = String(req.query?.inline || '').trim() === '1';
     const prisma = require('../../prisma/client');
 
     // Por defecto, usar período activo (evita traer certificados viejos)
@@ -124,6 +130,10 @@ async function downloadCertificateByStudent(req, res, next) {
     const abs = require('path').join(process.cwd(), doc.ruta_archivo);
     res.setHeader('Content-Type', doc.mime_type || 'application/pdf');
     const fname = doc.nombre_archivo || `certificado_tesoreria_${estudiante_id}.pdf`;
+    if (inline) {
+      res.setHeader('Content-Disposition', `inline; filename="${fname}"`);
+      return res.sendFile(abs);
+    }
     return res.download(abs, fname);
   } catch (err) { next(err); }
 }

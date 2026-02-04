@@ -309,9 +309,11 @@ async function generarCertificado({ periodo_id, estudiante_id, issuer_id }) {
     // Firma centrada como la plantilla (zona media-baja)
     docPdf.y = Math.round(docPdf.page.height * 0.62);
 
-    docPdf.font('Helvetica').fontSize(11).text(issuerLabel, { align: 'center' });
-    docPdf.font('Helvetica-Bold').fontSize(10).text('TESORERÍA', { align: 'center' });
-    docPdf.font('Helvetica-Bold').fontSize(9).text('INSTITUTO SUPERIOR TECNOLÓGICO LOS ANDES', { align: 'center' });
+    const sigW = docPdf.page.width - docPdf.page.margins.left - docPdf.page.margins.right;
+    const sigX = docPdf.page.margins.left;
+    docPdf.font('Helvetica').fontSize(11).text(issuerLabel, sigX, docPdf.y, { width: sigW, align: 'center' });
+    docPdf.font('Helvetica-Bold').fontSize(10).text('TESORERÍA', sigX, docPdf.y, { width: sigW, align: 'center' });
+    docPdf.font('Helvetica-Bold').fontSize(9).text('INSTITUTO SUPERIOR TECNOLÓGICO LOS ANDES', sigX, docPdf.y, { width: sigW, align: 'center' });
 
     docPdf.end();
     out.on('finish', resolve);
