@@ -233,7 +233,7 @@ async function recientes(req, res, next) {
       ? (() => { const d = new Date(); d.setDate(d.getDate() - Number(days)); return d; })()
       : null;
 
-    const [grades, docs, users] = await Promise.all([
+    let [grades, docs] = await Promise.all([
       prisma.academic_grades.findMany({
         where: {
           module: { in: ['vinculacion', 'practicas'] },
@@ -253,11 +253,43 @@ async function recientes(req, res, next) {
         take: 10,
         select: { creado_en: true, usuario_id: true, tipo: true },
       }).catch(() => []),
-      prisma.usuarios.findMany({
-        where: { usuario_id: { in: Array.from(new Set([...(grades || []).map(g => Number(g.id_user)), ...(docs || []).map(d => Number(d.usuario_id))].filter(n => Number.isFinite(n)))) } },
-        select: { usuario_id: true, nombre: true, apellido: true }
-      }).catch(() => []),
     ]);
+
+    // Fallback: si en el período activo no hay actividad, mostrar la más reciente del módulo (cualquier período)
+    if ((!grades || grades.length === 0) && (!docs || docs.length === 0)) {
+      [grades, docs] = await Promise.all([
+        prisma.academic_grades.findMany({
+          where: {
+            module: { in: ['vinculacion', 'practicas'] },
+            ...(since ? { updated_at: { gte: since } } : {}),
+          },
+          orderBy: { updated_at: 'desc' },
+          take: 10,
+          select: { module: true, updated_at: true, status: true, id_user: true }
+        }).catch(() => []),
+        prisma.documentos.findMany({
+          where: {
+            tipo: { in: ['cert_vinculacion', 'cert_practicas'] },
+            ...(since ? { creado_en: { gte: since } } : {}),
+          },
+          orderBy: { creado_en: 'desc' },
+          take: 10,
+          select: { creado_en: true, usuario_id: true, tipo: true },
+        }).catch(() => []),
+      ]);
+    }
+
+    const userIdsForNames = Array.from(new Set([
+      ...(grades || []).map(g => Number(g.id_user)),
+      ...(docs || []).map(d => Number(d.usuario_id)),
+    ].filter(n => Number.isFinite(Number(n)))));
+
+    const users = userIdsForNames.length
+      ? await prisma.usuarios.findMany({
+          where: { usuario_id: { in: userIdsForNames } },
+          select: { usuario_id: true, nombre: true, apellido: true }
+        }).catch(() => [])
+      : [];
 
     const nameMap = new Map((users || []).map(u => [Number(u.usuario_id), `${u.nombre} ${u.apellido}`.trim()]));
 

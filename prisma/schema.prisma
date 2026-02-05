@@ -356,12 +356,6 @@ enum modalidades_elegidas_modalidad {
   EXAMEN_COMPLEXIVO
 }
 
-enum academic_grades_module {
-  english
-  vinculacion
-  practicas
-}
-
 enum academic_grades_status {
   saved
   validated
@@ -379,4 +373,11 @@ enum documentos_estado {
   rechazado
   pendiente_pago
   finalizado
+}
+
+enum academic_grades_module {
+  english
+  vinculacion
+  practicas
+  complexivo
 }

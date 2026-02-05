@@ -5,6 +5,171 @@ const prisma = require("../../prisma/client");
 const { z } = require("zod");
 const authorize = require("../middlewares/authorize");
 
+function safeSchemaName(name) {
+  const s = String(name || '').trim();
+  return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+}
+
+async function getActivePeriodId(overrideAp) {
+  let id_ap = Number.isFinite(Number(overrideAp)) ? Number(overrideAp) : undefined;
+  if (!Number.isFinite(Number(id_ap))) {
+    const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+    const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+    id_ap = per?.id_academic_periods;
+  }
+  return Number.isFinite(Number(id_ap)) ? Number(id_ap) : null;
+}
+
+async function getCareerNameMap(careerIds) {
+  const ids = Array.from(new Set((careerIds || []).map(n => Number(n)).filter(Number.isFinite)));
+  if (!ids.length) return {};
+  let map = {};
+  try {
+    const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+    const inList = ids.join(',');
+    const rows = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`);
+    if (Array.isArray(rows)) {
+      for (const r of rows) map[Number(r.id)] = String(r.nombre);
+    }
+  } catch (_) {
+    map = {};
+  }
+  return map;
+}
+
+// GET /uic/admin/reportes/general?academicPeriodId=&careerId=
+// Lista estudiantes en proceso de titulación (modalidades_elegidas) con carrera y modalidad
+router.get('/admin/reportes/general', authorize('Coordinador','Administrador'), async (req, res, next) => {
+  try {
+    const careerId = req.query?.careerId ? Number(req.query.careerId) : undefined;
+    const id_ap = await getActivePeriodId(req.query?.academicPeriodId);
+    if (!Number.isFinite(Number(id_ap))) return res.json([]);
+
+    const mods = await prisma.modalidades_elegidas.findMany({
+      where: {
+        periodo_id: Number(id_ap),
+        ...(Number.isFinite(Number(careerId)) ? { carrera_id: Number(careerId) } : {}),
+      },
+      select: { estudiante_id: true, carrera_id: true, modalidad: true }
+    }).catch(() => []);
+    if (!mods.length) return res.json([]);
+
+    const estIds = Array.from(new Set(mods.map(m => Number(m.estudiante_id)).filter(Number.isFinite)));
+    const usuarios = await prisma.usuarios.findMany({
+      where: { usuario_id: { in: estIds } },
+      select: { usuario_id: true, nombre: true, apellido: true }
+    }).catch(() => []);
+    const nameMap = new Map((usuarios || []).map(u => [Number(u.usuario_id), `${u.nombre} ${u.apellido}`.trim()]));
+
+    const careerMap = await getCareerNameMap(mods.map(m => m.carrera_id));
+
+    const data = mods.map(m => ({
+      id_user: Number(m.estudiante_id),
+      estudiante: nameMap.get(Number(m.estudiante_id)) || `Usuario ${m.estudiante_id}`,
+      carrera_id: Number(m.carrera_id),
+      carrera: careerMap[Number(m.carrera_id)] || null,
+      modalidad: String(m.modalidad) === 'UIC' ? 'UIC' : 'Examen Complexivo',
+    })).sort((a,b)=> String(a.estudiante).localeCompare(String(b.estudiante)));
+
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// GET /uic/admin/reportes/especifico?academicPeriodId=&careerId=&modalidad=UIC|EXAMEN_COMPLEXIVO
+router.get('/admin/reportes/especifico', authorize('Coordinador','Administrador'), async (req, res, next) => {
+  try {
+    const careerId = req.query?.careerId ? Number(req.query.careerId) : undefined;
+    const modalidad = String(req.query?.modalidad || '').trim();
+    const id_ap = await getActivePeriodId(req.query?.academicPeriodId);
+    if (!Number.isFinite(Number(id_ap))) return res.json([]);
+
+    if (modalidad === 'EXAMEN_COMPLEXIVO') {
+      const mods = await prisma.modalidades_elegidas.findMany({
+        where: {
+          periodo_id: Number(id_ap),
+          modalidad: 'EXAMEN_COMPLEXIVO',
+          ...(Number.isFinite(Number(careerId)) ? { carrera_id: Number(careerId) } : {}),
+        },
+        select: { estudiante_id: true, carrera_id: true, modalidad: true }
+      }).catch(() => []);
+      if (!mods.length) return res.json([]);
+
+      const estIds = Array.from(new Set(mods.map(m => Number(m.estudiante_id)).filter(Number.isFinite)));
+      const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: estIds } }, select: { usuario_id: true, nombre: true, apellido: true } }).catch(() => []);
+      const nameMap = new Map((usuarios || []).map(u => [Number(u.usuario_id), `${u.nombre} ${u.apellido}`.trim()]));
+      const careerMap = await getCareerNameMap(mods.map(m => m.carrera_id));
+
+      const data = mods.map(m => ({
+        id_user: Number(m.estudiante_id),
+        estudiante: nameMap.get(Number(m.estudiante_id)) || `Usuario ${m.estudiante_id}`,
+        carrera_id: Number(m.carrera_id),
+        carrera: careerMap[Number(m.carrera_id)] || null,
+        modalidad: 'Examen Complexivo',
+      })).sort((a,b)=> String(a.estudiante).localeCompare(String(b.estudiante)));
+      return res.json(data);
+    }
+
+    // UIC: estudiantes con tutor y tribunal asignados
+    const asigns = await prisma.uic_asignaciones.findMany({
+      where: {
+        periodo_id: Number(id_ap),
+        tutor_usuario_id: { not: null },
+        ...(Number.isFinite(Number(careerId)) ? { carrera_id: Number(careerId) } : {}),
+      },
+      select: { uic_asignacion_id: true, estudiante_id: true, carrera_id: true, tutor_usuario_id: true }
+    }).catch(() => []);
+    if (!asigns.length) return res.json([]);
+
+    const asignIds = Array.from(new Set(asigns.map(a => Number(a.uic_asignacion_id)).filter(Number.isFinite)));
+    const miembros = asignIds.length
+      ? await prisma.uic_tribunal_miembros.findMany({
+          where: { uic_asignacion_id: { in: asignIds } },
+          select: { uic_asignacion_id: true, docente_usuario_id: true }
+        }).catch(() => [])
+      : [];
+
+    const miembrosByAsign = new Map();
+    for (const m of (miembros || [])) {
+      const aid = Number(m.uic_asignacion_id);
+      if (!Number.isFinite(aid)) continue;
+      const arr = miembrosByAsign.get(aid) || [];
+      arr.push(Number(m.docente_usuario_id));
+      miembrosByAsign.set(aid, arr);
+    }
+
+    const asignsWithTrib = asigns.filter(a => {
+      const arr = miembrosByAsign.get(Number(a.uic_asignacion_id)) || [];
+      return Array.isArray(arr) && arr.length > 0;
+    });
+    if (!asignsWithTrib.length) return res.json([]);
+
+    const userIds = Array.from(new Set([
+      ...asignsWithTrib.map(a => Number(a.estudiante_id)),
+      ...asignsWithTrib.map(a => Number(a.tutor_usuario_id)).filter(Number.isFinite),
+      ...(miembros || []).map(m => Number(m.docente_usuario_id)).filter(Number.isFinite)
+    ]));
+    const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: userIds } }, select: { usuario_id: true, nombre: true, apellido: true } }).catch(() => []);
+    const nameMap = new Map((usuarios || []).map(u => [Number(u.usuario_id), `${u.nombre} ${u.apellido}`.trim()]));
+    const careerMap = await getCareerNameMap(asignsWithTrib.map(a => a.carrera_id));
+
+    const data = asignsWithTrib.map(a => {
+      const tribIds = (miembrosByAsign.get(Number(a.uic_asignacion_id)) || []).filter(Number.isFinite);
+      const tribNames = tribIds.map(id => nameMap.get(Number(id))).filter(Boolean);
+      return {
+        id_user: Number(a.estudiante_id),
+        estudiante: nameMap.get(Number(a.estudiante_id)) || `Usuario ${a.estudiante_id}`,
+        carrera_id: Number(a.carrera_id),
+        carrera: careerMap[Number(a.carrera_id)] || null,
+        modalidad: 'UIC',
+        tutor: a.tutor_usuario_id ? (nameMap.get(Number(a.tutor_usuario_id)) || null) : null,
+        tribunal: tribNames.join(', '),
+      };
+    }).sort((x,y)=> String(x.estudiante).localeCompare(String(y.estudiante)));
+
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
 // Admin endpoint (Coordinación) para requerir informe final
 router.post("/admin/final/require", authorize('Coordinador', 'Administrador'), async (req, res, next) => {
   try {
@@ -39,8 +204,9 @@ router.get('/admin/estudiantes-uic-sin-tribunal', authorize('Coordinador','Admin
     const overrideAp = req.query?.academicPeriodId ? Number(req.query.academicPeriodId) : undefined;
     let id_ap = Number.isFinite(overrideAp) ? Number(overrideAp) : undefined;
     if (!Number.isFinite(Number(id_ap))) {
-      const per = await prisma.periodos.findFirst({ where: { estado: 'activo' }, orderBy: { periodo_id: 'desc' }, select: { periodo_id: true } });
-      id_ap = per?.periodo_id;
+      const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+      const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+      id_ap = per?.id_academic_periods;
     }
     if (!Number.isFinite(Number(id_ap))) return res.json([]);
 
@@ -53,48 +219,109 @@ router.get('/admin/estudiantes-uic-sin-tribunal', authorize('Coordinador','Admin
       } catch (_) { careerName = null; }
     }
 
-    const topics = await prisma.uic_topics.findMany({
-      where: { id_academic_periods: Number(id_ap), ...(careerName ? { career: careerName } : {}) },
-      select: { id_user: true, career: true }
-    });
-    const estIds = topics.map(t => t.id_user);
+    // Misma lógica base que Asignar Tutor: uic_topics define quién está en UIC en el período.
+    // Para Tribunal, un estudiante es elegible si ya tiene tutor (aquí: uic_topics.id_tutor).
+    let topics = await prisma.uic_topics.findMany({
+      where: {
+        id_academic_periods: Number(id_ap),
+        ...(careerName ? { career: careerName } : {}),
+      },
+      select: { id_user: true, id_tutor: true, career: true }
+    }).catch(() => []);
+
+    if (!Array.isArray(topics) || topics.length === 0) {
+      try {
+        const rows = await prisma.$queryRaw`
+          SELECT id_user, id_tutor, career
+          FROM uic_topics
+          WHERE id_academic_periods = ${Number(id_ap)}
+          ${careerName ? prisma.$queryRaw`AND career = ${String(careerName)}` : prisma.$queryRaw``}
+        `;
+        if (Array.isArray(rows)) {
+          topics = rows.map(r => ({
+            id_user: Number(r.id_user),
+            id_tutor: Number(r.id_tutor),
+            career: r.career != null ? String(r.career) : null,
+          })).filter(t => Number.isFinite(Number(t.id_user)));
+        }
+      } catch (e) {
+        try { console.error('[uic] estudiantes-uic-sin-tribunal raw topics fallback error:', e); } catch (_) {}
+      }
+    }
+
+    try { if (Array.isArray(topics)) console.log('[uic] estudiantes-uic-sin-tribunal topics:', { id_ap: Number(id_ap), careerName, count: topics.length }); } catch (_) {}
+
+    const estIds = (topics || []).map(t => Number(t.id_user)).filter(n => Number.isFinite(Number(n)));
     if (estIds.length === 0) return res.json([]);
 
-    // Estudiantes con tribunal asignado
-    const ta = await prisma.tribunal_assignments.findMany({
-      where: { id_academic_periods: Number(id_ap), id_user_student: { in: estIds } },
-      select: { id_user_student: true }
+    // Estudiantes con tribunal asignado (UIC): existen miembros en uic_tribunal_miembros para la asignación del período
+    const asignsAll = await prisma.uic_asignaciones.findMany({
+      where: { periodo_id: Number(id_ap), estudiante_id: { in: estIds.map(Number) } },
+      select: { uic_asignacion_id: true, estudiante_id: true }
+    }).catch(() => []);
+    const asignIdByStudent = new Map((asignsAll || []).map(a => [Number(a.estudiante_id), Number(a.uic_asignacion_id)]));
+    const asignIds = Array.from(new Set((asignsAll || []).map(a => Number(a.uic_asignacion_id)).filter(n => Number.isFinite(n))));
+
+    const miembros = asignIds.length
+      ? await prisma.uic_tribunal_miembros.findMany({
+          where: { uic_asignacion_id: { in: asignIds } },
+          select: { uic_asignacion_id: true }
+        }).catch(() => [])
+      : [];
+    const withTribunalAsign = new Set((miembros || []).map(m => Number(m.uic_asignacion_id)));
+    const sinTribunalIds = estIds.filter(id => {
+      const asigId = asignIdByStudent.get(Number(id));
+      return !asigId || !withTribunalAsign.has(Number(asigId));
     });
-    const withTribunal = new Set((ta || []).map(x => Number(x.id_user_student)));
-    const sinTribunalIds = estIds.filter(id => !withTribunal.has(Number(id)));
     if (sinTribunalIds.length === 0) return res.json([]);
 
-    // Tutor por estudiante (si existe uic_asignaciones)
+    // Si existe uic_asignaciones, se respeta. Si no, se usa el tutor de uic_topics.
     const asigns = await prisma.uic_asignaciones.findMany({
-      where: { periodo_id: Number(id_ap), estudiante_id: { in: sinTribunalIds } },
-      select: { estudiante_id: true, tutor_usuario_id: true }
-    });
-    const tutorIdMap = new Map(asigns.map(a => [Number(a.estudiante_id), a.tutor_usuario_id != null ? Number(a.tutor_usuario_id) : null]));
+      where: {
+        periodo_id: Number(id_ap),
+        estudiante_id: { in: sinTribunalIds.map(Number) },
+      },
+      select: { estudiante_id: true, tutor_usuario_id: true, carrera_id: true }
+    }).catch(() => []);
+
+    const tutorIdMapFromAsign = new Map((asigns || [])
+      .filter(a => sinTribunalIds.includes(Number(a.estudiante_id)))
+      .map(a => [Number(a.estudiante_id), a.tutor_usuario_id != null ? Number(a.tutor_usuario_id) : null]));
+
+    const tutorIdMapFromTopics = new Map((topics || [])
+      .filter(t => sinTribunalIds.includes(Number(t.id_user)))
+      .map(t => [Number(t.id_user), t.id_tutor != null ? Number(t.id_tutor) : null]));
+
+    const tutorIdMap = new Map(sinTribunalIds.map(id => [
+      Number(id),
+      tutorIdMapFromAsign.get(Number(id)) ?? tutorIdMapFromTopics.get(Number(id)) ?? null
+    ]));
 
     const allUserIds = Array.from(new Set([
       ...sinTribunalIds.map(Number),
       ...Array.from(tutorIdMap.values()).filter(x => Number.isFinite(Number(x))).map(Number)
     ]));
-    const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: allUserIds } }, select: { usuario_id: true, nombre: true, apellido: true } });
+    const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: allUserIds } }, select: { usuario_id: true, nombre: true, apellido: true } }).catch(() => []);
     const nameMap = new Map(usuarios.map(u => [u.usuario_id, `${u.nombre} ${u.apellido}`.trim()]));
 
-    const topicCareerMap = new Map(topics.map(t => [Number(t.id_user), String(t.career || '').trim()]));
-
+    const topicCareerMap = new Map((topics || []).map(t => [Number(t.id_user), String(t.career || '').trim()]));
     const data = sinTribunalIds.map(id => ({
       id_user: Number(id),
       fullname: nameMap.get(Number(id)) || `Usuario ${id}`,
       tutor_id: tutorIdMap.get(Number(id)) ?? null,
       tutor_name: tutorIdMap.get(Number(id)) ? (nameMap.get(Number(tutorIdMap.get(Number(id)))) || null) : null,
-      career_id: Number.isFinite(Number(careerId)) ? Number(careerId) : null,
-      career_name: topicCareerMap.get(Number(id)) || null,
+      career_id: (asigns && asigns.length)
+        ? ((asigns.find(a => Number(a.estudiante_id) === Number(id))?.carrera_id != null)
+            ? Number(asigns.find(a => Number(a.estudiante_id) === Number(id))?.carrera_id)
+            : (Number.isFinite(Number(careerId)) ? Number(careerId) : null))
+        : (Number.isFinite(Number(careerId)) ? Number(careerId) : null),
+      career_name: (topicCareerMap.get(Number(id)) || null),
     }));
     res.json(data);
-  } catch (err) { next(err); }
+  } catch (err) {
+    try { console.error('[uic] estudiantes-uic-sin-tribunal error:', err); } catch (_) {}
+    return res.json([]);
+  }
 });
 
 // GET /uic/admin/asignaciones/tribunal?careerId=&academicPeriodId=
@@ -105,8 +332,9 @@ router.get('/admin/asignaciones/tribunal', authorize('Coordinador','Administrado
     const overrideAp = req.query?.academicPeriodId ? Number(req.query.academicPeriodId) : undefined;
     let id_ap = Number.isFinite(overrideAp) ? Number(overrideAp) : undefined;
     if (!Number.isFinite(Number(id_ap))) {
-      const per = await prisma.periodos.findFirst({ where: { estado: 'activo' }, orderBy: { periodo_id: 'desc' }, select: { periodo_id: true } });
-      id_ap = per?.periodo_id;
+      const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+      const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+      id_ap = per?.id_academic_periods;
     }
     if (!Number.isFinite(Number(id_ap))) return res.json([]);
 
@@ -122,38 +350,67 @@ router.get('/admin/asignaciones/tribunal', authorize('Coordinador','Administrado
     const topics = await prisma.uic_topics.findMany({
       where: { id_academic_periods: Number(id_ap), ...(careerName ? { career: careerName } : {}) },
       select: { id_user: true, career: true }
-    });
+    }).catch(() => []);
     const estIds = topics.map(t => t.id_user);
     if (estIds.length === 0) return res.json([]);
 
     const topicCareerMap = new Map(topics.map(t => [Number(t.id_user), String(t.career || '').trim()]));
 
-    const asigns = await prisma.tribunal_assignments.findMany({
-      where: { id_academic_periods: Number(id_ap), id_user_student: { in: estIds } },
-      select: { id: true, id_user_student: true, id_president: true, id_secretary: true, id_vocal: true }
-    });
-    if (!asigns.length) return res.json([]);
+    const uicAsigns = await prisma.uic_asignaciones.findMany({
+      where: { periodo_id: Number(id_ap), estudiante_id: { in: estIds.map(Number) } },
+      select: { uic_asignacion_id: true, estudiante_id: true, carrera_id: true }
+    }).catch(() => []);
+    if (!uicAsigns.length) return res.json([]);
+    const asignIds = Array.from(new Set(uicAsigns.map(a => Number(a.uic_asignacion_id)).filter(n => Number.isFinite(n))));
+    if (!asignIds.length) return res.json([]);
+
+    const miembros = await prisma.uic_tribunal_miembros.findMany({
+      where: { uic_asignacion_id: { in: asignIds } },
+      select: { uic_asignacion_id: true, docente_usuario_id: true, rol_tribunal: true }
+    }).catch(() => []);
+    if (!miembros.length) return res.json([]);
+
+    const miembrosByAsign = new Map();
+    for (const m of (miembros || [])) {
+      const aid = Number(m.uic_asignacion_id);
+      if (!Number.isFinite(aid)) continue;
+      const arr = miembrosByAsign.get(aid) || [];
+      arr.push({ docente_usuario_id: Number(m.docente_usuario_id), rol_tribunal: String(m.rol_tribunal) });
+      miembrosByAsign.set(aid, arr);
+    }
 
     const userIds = Array.from(new Set([
-      ...asigns.map(a => Number(a.id_user_student)),
-      ...asigns.flatMap(a => [a.id_president, a.id_secretary, a.id_vocal].map(Number))
+      ...uicAsigns.map(a => Number(a.estudiante_id)),
+      ...(miembros || []).map(m => Number(m.docente_usuario_id)),
     ].filter(x => Number.isFinite(Number(x)))));
-    const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: userIds } }, select: { usuario_id: true, nombre: true, apellido: true } });
+    const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: userIds } }, select: { usuario_id: true, nombre: true, apellido: true } }).catch(() => []);
     const nameMap = new Map(usuarios.map(u => [u.usuario_id, `${u.nombre} ${u.apellido}`.trim()]));
-    const data = asigns.map(a => {
-      return {
-        id_user: Number(a.id_user_student),
-        fullname: nameMap.get(Number(a.id_user_student)) || `Usuario ${a.id_user_student}`,
-        career_id: Number.isFinite(Number(careerId)) ? Number(careerId) : null,
-        career_name: topicCareerMap.get(Number(a.id_user_student)) || null,
-        presidente: nameMap.get(Number(a.id_president)) || null,
-        secretario: nameMap.get(Number(a.id_secretary)) || null,
-        vocal: nameMap.get(Number(a.id_vocal)) || null,
-      };
-    }).sort((x,y)=> String(x.fullname).localeCompare(String(y.fullname)));
+
+    const asignByStudent = new Map(uicAsigns.map(a => [Number(a.estudiante_id), a]));
+    const data = uicAsigns
+      .filter(a => miembrosByAsign.has(Number(a.uic_asignacion_id)))
+      .map(a => {
+        const arr = miembrosByAsign.get(Number(a.uic_asignacion_id)) || [];
+        const m1 = arr.find(x => String(x.rol_tribunal) === 'miembro_1');
+        const m2 = arr.find(x => String(x.rol_tribunal) === 'miembro_2');
+        const m3 = arr.find(x => String(x.rol_tribunal) === 'miembro_3');
+        return {
+          id_user: Number(a.estudiante_id),
+          fullname: nameMap.get(Number(a.estudiante_id)) || `Usuario ${a.estudiante_id}`,
+          career_id: Number.isFinite(Number(careerId)) ? Number(careerId) : (a.carrera_id != null ? Number(a.carrera_id) : null),
+          career_name: topicCareerMap.get(Number(a.estudiante_id)) || null,
+          presidente: m1?.docente_usuario_id ? (nameMap.get(Number(m1.docente_usuario_id)) || null) : null,
+          secretario: m2?.docente_usuario_id ? (nameMap.get(Number(m2.docente_usuario_id)) || null) : null,
+          vocal: m3?.docente_usuario_id ? (nameMap.get(Number(m3.docente_usuario_id)) || null) : null,
+        };
+      })
+      .sort((x,y)=> String(x.fullname).localeCompare(String(y.fullname)));
 
     res.json(data);
-  } catch (err) { next(err); }
+  } catch (err) {
+    try { console.error('[uic] asignaciones/tribunal error:', err); } catch (_) {}
+    return res.json([]);
+  }
 });
 
 // GET /uic/admin/asignaciones/tutor?careerId=&academicPeriodId=

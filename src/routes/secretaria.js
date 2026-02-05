@@ -1,7 +1,25 @@
 const express = require("express");
 const router = express.Router();
 const authorize = require("../middlewares/authorize");
-const { generarCertNotas, listPromedios, getPromediosById, getNotasDetalle, approve, reject, reconsider, actaLista, actaFirmada, listActas, saveNotaTribunal, generateHoja, linkHoja } = require("../controllers/secretariaController");
+const { 
+  generarCertNotas, 
+  listPromedios, 
+  getPromediosById, 
+  getNotasDetalle, 
+  listValidaciones,
+  approve,
+  reject,
+  reconsider,
+  actaLista,
+  actaFirmada,
+  listActas,
+  saveNotaTribunal,
+  generateHoja,
+  linkHoja,
+  listActasComplexivo,
+  saveNotaComplexivo,
+  generateActaComplexivo,
+} = require("../controllers/secretariaController");
 const prisma = require("../../prisma/client");
 
 function safeSchemaName(schema) {
@@ -71,6 +89,14 @@ router.put("/actas/nota", authorize('Secretaria', 'Administrador'), saveNotaTrib
 router.post("/actas/hoja", authorize('Secretaria', 'Administrador'), generateHoja);
 // PUT /secretaria/actas/link-hoja { id_user_student, documento_id }
 router.put("/actas/link-hoja", authorize('Secretaria', 'Administrador'), linkHoja);
+
+// ============== Acta de Grado (Examen Complexivo) ==============
+// GET /secretaria/actas/complexivo (lista estudiantes EXAMEN_COMPLEXIVO con nota guardada)
+router.get("/actas/complexivo", authorize('Secretaria', 'Administrador'), listActasComplexivo);
+// PUT /secretaria/actas/complexivo/nota { id_user_student, score }
+router.put("/actas/complexivo/nota", authorize('Secretaria', 'Administrador'), saveNotaComplexivo);
+// POST /secretaria/actas/complexivo/acta { id_user_student } -> PDF stream
+router.post("/actas/complexivo/acta", authorize('Secretaria', 'Administrador'), generateActaComplexivo);
 
 // GET /secretaria/dashboard
 router.get("/dashboard", authorize('Secretaria', 'Administrador'), async (req, res, next) => {

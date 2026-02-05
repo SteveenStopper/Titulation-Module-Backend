@@ -453,3 +453,102 @@ module.exports.listActas = listActas;
 module.exports.saveNotaTribunal = saveNotaTribunal;
 module.exports.generateHoja = generateHoja;
 module.exports.linkHoja = linkHoja;
+
+// ============== Acta de Grado (Examen Complexivo) ==============
+
+async function listActasComplexivo(req, res, next) {
+  try {
+    const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+    const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+    const id_ap = per?.id_academic_periods;
+    if (!Number.isFinite(Number(id_ap))) return res.json([]);
+
+    const mods = await prisma.modalidades_elegidas.findMany({
+      where: { periodo_id: Number(id_ap), modalidad: 'EXAMEN_COMPLEXIVO' },
+      select: { estudiante_id: true, carrera_id: true }
+    }).catch(() => []);
+    if (!mods.length) return res.json([]);
+
+    const estIds = Array.from(new Set(mods.map(m => Number(m.estudiante_id)).filter(Number.isFinite)));
+    if (!estIds.length) return res.json([]);
+
+    const usuarios = await prisma.usuarios.findMany({
+      where: { usuario_id: { in: estIds } },
+      select: { usuario_id: true, nombre: true, apellido: true }
+    }).catch(() => []);
+    const nameMap = new Map((usuarios || []).map(u => [Number(u.usuario_id), `${u.nombre} ${u.apellido}`.trim()]));
+
+    // Nota complexivo en academic_grades
+    const grades = await prisma.academic_grades.findMany({
+      where: { module: 'complexivo', id_academic_periods: Number(id_ap), id_user: { in: estIds } },
+      select: { id_user: true, score: true }
+    }).catch(() => []);
+    const gradeMap = new Map((grades || []).map(g => [Number(g.id_user), g.score != null ? Number(g.score) : null]));
+
+    // Map carrera desde esquema externo
+    let careerNameMap = {};
+    try {
+      const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+      const carIds = Array.from(new Set(mods.map(m => Number(m.carrera_id)).filter(Number.isFinite)));
+      if (carIds.length) {
+        const inList = carIds.join(',');
+        const rows = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`);
+        if (Array.isArray(rows)) for (const r of rows) careerNameMap[Number(r.id)] = String(r.nombre);
+      }
+    } catch (_) { careerNameMap = {}; }
+
+    const data = mods
+      .map(m => ({
+        id: Number(m.estudiante_id),
+        estudiante: nameMap.get(Number(m.estudiante_id)) || `Usuario ${m.estudiante_id}`,
+        carrera: careerNameMap[Number(m.carrera_id)] || null,
+        calificacionComplexivo: gradeMap.has(Number(m.estudiante_id)) ? gradeMap.get(Number(m.estudiante_id)) : null,
+      }))
+      .sort((a, b) => String(a.estudiante).localeCompare(String(b.estudiante)));
+
+    res.json(data);
+  } catch (err) { next(err); }
+}
+
+async function saveNotaComplexivo(req, res, next) {
+  try {
+    const schema = z.object({ id_user_student: z.coerce.number().int(), score: z.coerce.number().min(0).max(10) });
+    const { id_user_student, score } = schema.parse(req.body || {});
+    const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+    const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+    const id_ap = per?.id_academic_periods;
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
+
+    await prisma.academic_grades.upsert({
+      where: { module_id_user_id_academic_periods: { module: 'complexivo', id_user: Number(id_user_student), id_academic_periods: Number(id_ap) } },
+      update: { score: Number(score), status: 'saved' },
+      create: { module: 'complexivo', id_user: Number(id_user_student), id_academic_periods: Number(id_ap), score: Number(score), status: 'saved' },
+      select: { grade_id: true }
+    });
+
+    res.json({ ok: true });
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
+}
+
+async function generateActaComplexivo(req, res, next) {
+  try {
+    let PDFDocument; try { PDFDocument = require('pdfkit'); } catch (_) { const err = new Error('Generación de PDF no disponible. Instala la dependencia: npm i pdfkit'); err.status = 501; throw err; }
+    const schema = z.object({ id_user_student: z.coerce.number().int() });
+    const { id_user_student } = schema.parse(req.body || {});
+
+    const u = await prisma.usuarios.findUnique({ where: { usuario_id: Number(id_user_student) }, select: { nombre: true, apellido: true } });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="acta-complexivo.pdf"');
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    doc.pipe(res);
+    doc.fontSize(18).text('Acta de Grado - Examen Complexivo', { align: 'center' });
+    doc.moveDown();
+    doc.fontSize(12).text(`Estudiante: ${u ? `${u.nombre} ${u.apellido}`.trim() : id_user_student}`);
+    doc.text('Calificación Examen Complexivo: ________');
+    doc.end();
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
+}
+
+module.exports.listActasComplexivo = listActasComplexivo;
+module.exports.saveNotaComplexivo = saveNotaComplexivo;
+module.exports.generateActaComplexivo = generateActaComplexivo;

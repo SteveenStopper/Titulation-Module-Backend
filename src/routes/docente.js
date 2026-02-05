@@ -681,6 +681,22 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
     });
     const nameMap = new Map(usuarios.map(u => [u.usuario_id, `${u.nombre} ${u.apellido}`.trim()]));
 
+    // carrera desde uic_topics como fallback (texto)
+    let topicCareerMap = {};
+    try {
+      const topics = await prisma.uic_topics.findMany({
+        where: { id_academic_periods: Number(id_ap), id_user: { in: estIds } },
+        select: { id_user: true, career: true }
+      });
+      if (Array.isArray(topics)) {
+        for (const t of topics) {
+          const uid = Number(t.id_user);
+          if (!Number.isFinite(uid)) continue;
+          topicCareerMap[uid] = t.career != null ? String(t.career) : null;
+        }
+      }
+    } catch (_) { topicCareerMap = {}; }
+
     // carreras names from external schema
     let careerNameMap = {};
     try {
@@ -701,7 +717,13 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
       let docUrl = null;
       try {
         const doc = await prisma.documentos.findFirst({
-          where: { estudiante_id: Number(a.estudiante_id), tipo: 'uic_final' },
+          where: {
+            tipo: 'uic_final',
+            OR: [
+              { estudiante_id: Number(a.estudiante_id) },
+              { usuario_id: Number(a.estudiante_id) },
+            ]
+          },
           orderBy: { creado_en: 'desc' },
           select: { ruta_archivo: true }
         });
@@ -710,7 +732,7 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
       data.push({
         id: String(a.estudiante_id),
         nombre: nameMap.get(a.estudiante_id) || `Usuario ${a.estudiante_id}`,
-        carrera: careerNameMap[a.carrera_id] || null,
+        carrera: careerNameMap[a.carrera_id] || topicCareerMap[Number(a.estudiante_id)] || null,
         documentoUrl: docUrl,
         calificacion: a.lector_nota != null ? Number(a.lector_nota) : null,
         observacion: a.lector_observacion || ''
