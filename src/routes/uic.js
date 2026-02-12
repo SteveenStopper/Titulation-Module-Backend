@@ -10,6 +10,20 @@ function safeSchemaName(name) {
   return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
 }
 
+function mapInstitutePerfilIdToRoleName(id) {
+  const map = new Map([
+    [1, 'Coordinador'],
+    [10, 'Tesoreria'],
+    [11, 'Secretaria'],
+    [14, 'Estudiante'],
+    [15, 'Docente'],
+    [17, 'Coordinador'],
+    [18, 'Vicerrector'],
+    [19, 'Administrador'],
+  ]);
+  return map.get(Number(id)) || null;
+}
+
 async function getActivePeriodId(overrideAp) {
   let id_ap = Number.isFinite(Number(overrideAp)) ? Number(overrideAp) : undefined;
   if (!Number.isFinite(Number(id_ap))) {
@@ -72,6 +86,104 @@ router.get('/admin/reportes/general', authorize('Coordinador','Administrador'), 
     })).sort((a,b)=> String(a.estudiante).localeCompare(String(b.estudiante)));
 
     res.json(data);
+  } catch (err) { next(err); }
+});
+
+// ====== Reportes (Administrador) ======
+// GET /uic/admin/reportes/admin/periodos
+router.get('/admin/reportes/admin/periodos', authorize('Administrador'), async (req, res, next) => {
+  try {
+    const rows = await prisma.periodos.findMany({
+      orderBy: [{ fecha_inicio: 'desc' }],
+      select: { periodo_id: true, nombre: true, fecha_inicio: true, fecha_fin: true, estado: true }
+    }).catch(() => []);
+    res.json(Array.isArray(rows) ? rows : []);
+  } catch (err) { next(err); }
+});
+
+// GET /uic/admin/reportes/admin/usuarios
+router.get('/admin/reportes/admin/usuarios', authorize('Administrador'), async (req, res, next) => {
+  try {
+    const rows = await prisma.usuarios.findMany({
+      orderBy: [{ apellido: 'asc' }, { nombre: 'asc' }],
+      select: {
+        usuario_id: true,
+        nombre: true,
+        apellido: true,
+        activo: true,
+        usuario_roles: { select: { roles: { select: { nombre: true } } } }
+      }
+    }).catch(() => []);
+
+    const ids = (Array.isArray(rows) ? rows : [])
+      .map(u => Number(u?.usuario_id))
+      .filter(Number.isFinite);
+
+    // Fallback al rol del Instituto (perfil) si el usuario no tiene roles locales
+    const instRoleById = new Map();
+    try {
+      const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+      if (ids.length) {
+        const placeholders = ids.map(() => '?').join(',');
+        const sql = `
+          SELECT ID_USUARIOS AS usuario_id, ID_PERFILES_USUARIOS AS perfil
+          FROM ${EXT_SCHEMA}.SEGURIDAD_USUARIOS
+          WHERE ID_USUARIOS IN (${placeholders})
+        `;
+        const instRows = await prisma.$queryRawUnsafe(sql, ...ids);
+        for (const r of (instRows || [])) {
+          const id = Number(r?.usuario_id);
+          const perfil = Number(r?.perfil);
+          if (!Number.isFinite(id) || !Number.isFinite(perfil)) continue;
+          const roleName = mapInstitutePerfilIdToRoleName(perfil);
+          if (roleName) instRoleById.set(id, roleName);
+        }
+      }
+    } catch (_) {
+      // ignorar
+    }
+
+    const data = (Array.isArray(rows) ? rows : []).map(u => {
+      const localRoles = (u.usuario_roles || [])
+        .map(r => r?.roles?.nombre)
+        .filter(Boolean);
+      const instRole = instRoleById.get(Number(u.usuario_id)) || null;
+      const merged = Array.from(new Set([...(localRoles || []), ...(instRole ? [instRole] : [])]));
+      return {
+        usuario_id: Number(u.usuario_id),
+        usuario: `${u.nombre} ${u.apellido}`.trim(),
+        rol: merged.length ? merged.join(', ') : null,
+        estado: u.activo ? 'Activo' : 'Inactivo',
+      };
+    });
+
+    res.json(data);
+  } catch (err) { next(err); }
+});
+
+// GET /uic/admin/reportes/admin/general?academicPeriodId=
+router.get('/admin/reportes/admin/general', authorize('Administrador'), async (req, res, next) => {
+  try {
+    const id_ap = await getActivePeriodId(req.query?.academicPeriodId);
+    if (!Number.isFinite(Number(id_ap))) {
+      return res.json({
+        periodo_id: null,
+        estudiantes_en_proceso: 0,
+        modalidad_uic: 0,
+        modalidad_examen_complexivo: 0,
+      });
+    }
+
+    const total = await prisma.modalidades_elegidas.count({ where: { periodo_id: Number(id_ap) } }).catch(() => 0);
+    const uic = await prisma.modalidades_elegidas.count({ where: { periodo_id: Number(id_ap), modalidad: 'UIC' } }).catch(() => 0);
+    const complexivo = await prisma.modalidades_elegidas.count({ where: { periodo_id: Number(id_ap), modalidad: 'EXAMEN_COMPLEXIVO' } }).catch(() => 0);
+
+    res.json({
+      periodo_id: Number(id_ap),
+      estudiantes_en_proceso: Number(total || 0),
+      modalidad_uic: Number(uic || 0),
+      modalidad_examen_complexivo: Number(complexivo || 0),
+    });
   } catch (err) { next(err); }
 });
 

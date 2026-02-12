@@ -85,6 +85,12 @@ async function getPeriodIdFromQuery(req) {
   return await getActivePeriodId();
 }
 
+async function getPeriodIdFromQueryOrId(req) {
+  const id = req?.query?.academicPeriodId !== undefined ? Number(req.query.academicPeriodId) : undefined;
+  if (Number.isFinite(Number(id))) return Number(id);
+  return await getPeriodIdFromQuery(req);
+}
+
 async function listMaterias(req, res, next) {
   try {
     const schema = z.object({ careerId: z.coerce.number().int().optional() });
@@ -505,3 +511,113 @@ async function reportTopTutores(req, res, next) {
 module.exports.reportResumen = reportResumen;
 module.exports.reportDistribucionCarreras = reportDistribucionCarreras;
 module.exports.reportTopTutores = reportTopTutores;
+
+async function reportMateriasAsignadas(req, res, next) {
+  try {
+    const schema = z.object({
+      academicPeriodId: z.coerce.number().int().optional(),
+      careerId: z.coerce.number().int().optional(),
+    });
+    const { careerId } = schema.parse(req.query || {});
+    const id_ap = await getPeriodIdFromQueryOrId(req);
+    if (!Number.isFinite(Number(id_ap))) return res.json({ periodId: null, data: [] });
+
+    const where = {
+      periodo_id: Number(id_ap),
+      ...(Number.isFinite(Number(careerId)) ? { carrera_id: Number(careerId) } : {}),
+    };
+    const rows = await prisma.complexivo_materias.findMany({
+      where,
+      orderBy: [{ carrera_id: 'asc' }, { nombre: 'asc' }],
+      select: { complexivo_materia_id: true, nombre: true, carrera_id: true, docente_usuario_id: true },
+    }).catch(() => []);
+
+    // Nombres de carreras desde esquema externo
+    const idsCar = Array.from(new Set((rows || []).map(r => Number(r.carrera_id)).filter(n => Number.isFinite(n) && n > 0)));
+    const careerNameMap = {};
+    if (idsCar.length) {
+      try {
+        const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+        const inList = idsCar.join(',');
+        const list = await prisma.$queryRawUnsafe(
+          `SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`
+        );
+        if (Array.isArray(list)) for (const r of list) careerNameMap[Number(r.id)] = String(r.nombre);
+      } catch (_) {}
+    }
+
+    const data = (rows || []).map((r, idx) => ({
+      nro: idx + 1,
+      materia: String(r.nombre || '').trim(),
+      carrera: careerNameMap[Number(r.carrera_id)] || `Carrera ${r.carrera_id}`,
+      estado: Number(r.docente_usuario_id) > 0 ? 'Asignada' : 'Sin asignar',
+    }));
+
+    res.json({ periodId: Number(id_ap), data });
+  } catch (e) {
+    if (e.name === 'ZodError') { e.status = 400; e.message = e.errors.map(x => x.message).join(', '); }
+    next(e);
+  }
+}
+
+async function reportDocentesAsignados(req, res, next) {
+  try {
+    const schema = z.object({
+      academicPeriodId: z.coerce.number().int().optional(),
+      careerId: z.coerce.number().int().optional(),
+    });
+    const { careerId } = schema.parse(req.query || {});
+    const id_ap = await getPeriodIdFromQueryOrId(req);
+    if (!Number.isFinite(Number(id_ap))) return res.json({ periodId: null, data: [] });
+
+    const where = {
+      periodo_id: Number(id_ap),
+      ...(Number.isFinite(Number(careerId)) ? { carrera_id: Number(careerId) } : {}),
+    };
+    const rows = await prisma.complexivo_materias.findMany({
+      where,
+      orderBy: [{ carrera_id: 'asc' }, { nombre: 'asc' }],
+      select: { nombre: true, carrera_id: true, docente_usuario_id: true },
+    }).catch(() => []);
+
+    const docentesIds = Array.from(new Set((rows || []).map(r => Number(r.docente_usuario_id)).filter(n => Number.isFinite(n) && n > 0)));
+    const docentes = docentesIds.length
+      ? await prisma.usuarios.findMany({ where: { usuario_id: { in: docentesIds } }, select: { usuario_id: true, nombre: true, apellido: true } }).catch(() => [])
+      : [];
+    const docMap = new Map((docentes || []).map(d => [Number(d.usuario_id), `${String(d.nombre || '').trim()} ${String(d.apellido || '').trim()}`.trim()]));
+
+    // Nombres de carreras
+    const idsCar = Array.from(new Set((rows || []).map(r => Number(r.carrera_id)).filter(n => Number.isFinite(n) && n > 0)));
+    const careerNameMap = {};
+    if (idsCar.length) {
+      try {
+        const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+        const inList = idsCar.join(',');
+        const list = await prisma.$queryRawUnsafe(
+          `SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`
+        );
+        if (Array.isArray(list)) for (const r of list) careerNameMap[Number(r.id)] = String(r.nombre);
+      } catch (_) {}
+    }
+
+    const data = (rows || []).map((r, idx) => {
+      const idDoc = Number(r.docente_usuario_id);
+      const asignado = Number.isFinite(idDoc) && idDoc > 0;
+      return {
+        nro: idx + 1,
+        docente: asignado ? (docMap.get(idDoc) || `Docente ${idDoc}`) : 'Sin asignar',
+        materia: String(r.nombre || '').trim(),
+        carrera: careerNameMap[Number(r.carrera_id)] || `Carrera ${r.carrera_id}`,
+        estado: asignado ? 'Asignado' : 'Sin asignar',
+      };
+    });
+
+    res.json({ periodId: Number(id_ap), data });
+  } catch (e) {
+    if (e.name === 'ZodError') { e.status = 400; e.message = e.errors.map(x => x.message).join(', '); }
+    next(e);
+  }
+}
+
+module.exports.reportMateriasAsignadas = reportMateriasAsignadas;
+module.exports.reportDocentesAsignados = reportDocentesAsignados;

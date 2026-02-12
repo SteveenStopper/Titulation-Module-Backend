@@ -26,7 +26,7 @@ router.get("/dashboard", authorize('Vicerrector','Administrador'), async (req, r
 
     // Cronogramas pendientes de publicar
     const pendientesPublicar = id_ap
-      ? await prisma.cronogramas.count({ where: { publicado: false, id_academic_periods: Number(id_ap) } }).catch(() => 0)
+      ? await prisma.cronogramas.count({ where: { publicado: false, periodo_id: Number(id_ap) } }).catch(() => 0)
       : 0;
 
     // Tutores disponibles (usuarios con rol Docente activos)
@@ -35,8 +35,6 @@ router.get("/dashboard", authorize('Vicerrector','Administrador'), async (req, r
     res.json({ carrerasActivas, materiasRegistradas, pendientesPublicar, tutoresDisponibles });
   } catch (err) { next(err); }
 });
-
-module.exports = router;
 
 // ====== Gestión Examen Complexivo (Vicerrectorado) ======
 router.get("/complexivo/materias", authorize('Vicerrector','Administrador'), vc.listMaterias);
@@ -54,3 +52,8 @@ router.get('/reportes/resumen', authorize('Vicerrector','Administrador'), vc.rep
 router.get('/reportes/distribucion-carreras', authorize('Vicerrector','Administrador'), vc.reportDistribucionCarreras);
 router.get('/reportes/top-tutores', authorize('Vicerrector','Administrador'), vc.reportTopTutores);
 
+// Nuevos reportes (formatos PDF)
+router.get('/reportes/complexivo-materias', authorize('Vicerrector','Administrador'), vc.reportMateriasAsignadas);
+router.get('/reportes/complexivo-docentes', authorize('Vicerrector','Administrador'), vc.reportDocentesAsignados);
+
+module.exports = router;

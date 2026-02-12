@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authorize = require("../middlewares/authorize");
-const { listResumen, approve, reject, reconsider, generateCertificate, downloadCertificateByDoc, downloadCertificateByStudent } = require("../controllers/tesoreriaController");
+const { listResumen, approve, reject, reconsider, generateCertificate, downloadCertificateByDoc, downloadCertificateByStudent, reportComprobantes, reportAranceles } = require("../controllers/tesoreriaController");
 const prisma = require("../../prisma/client");
 
 async function getActiveAcademicPeriodId() {
@@ -31,6 +31,12 @@ async function getPeriodDateRange(academicPeriodId) {
 
 // GET /tesoreria/resumen?page=&pageSize=&minSem=
 router.get("/resumen", authorize('Tesoreria', 'Administrador', 'Secretaria'), listResumen);
+
+// GET /tesoreria/reportes/comprobantes?academicPeriodId=&careerId=
+router.get('/reportes/comprobantes', authorize('Tesoreria', 'Administrador'), reportComprobantes);
+
+// GET /tesoreria/reportes/aranceles?academicPeriodId=&careerId=
+router.get('/reportes/aranceles', authorize('Tesoreria', 'Administrador'), reportAranceles);
 
 // PUT /tesoreria/validaciones/approve
 router.put("/validaciones/approve", authorize('Tesoreria', 'Administrador'), approve);

@@ -60,7 +60,7 @@ async function listRecentAdmin(req, res, next) {
       orderBy: { creado_en: 'desc' },
       take
     });
-    const items = rows.map((row) => ({
+    const itemsRaw = rows.map((row) => ({
       id_notification: row.notificacion_id,
       type: row.destinatario_rol || 'info',
       title: row.titulo,
@@ -70,6 +70,19 @@ async function listRecentAdmin(req, res, next) {
       is_read: row.leida,
       created_at: row.creado_en,
     }));
+
+    // Puede existir 1 notificación por rol (mismo título/cuerpo). En el panel admin
+    // se muestra actividad global sin agrupar por rol, así que deduplicamos.
+    const seen = new Set();
+    const items = [];
+    for (const it of itemsRaw) {
+      const key = `${String(it.title || '').trim()}|${String(it.message || '').trim()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(it);
+      if (items.length >= take) break;
+    }
+
     res.json(items);
   } catch (e) { next(e); }
 }

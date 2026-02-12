@@ -115,9 +115,28 @@ router.get("/dashboard", authorize('Secretaria', 'Administrador'), async (req, r
     const start = new Date(); start.setHours(0, 0, 0, 0);
 
     // actas pendientes: asignaciones UIC sin acta_doc_id
-    const actasPendientes = Number.isFinite(Number(id_ap))
+    const actasPendientesUic = Number.isFinite(Number(id_ap))
       ? await prisma.uic_asignaciones.count({ where: { periodo_id: Number(id_ap), OR: [{ acta_doc_id: null }, { acta_doc_id: { equals: undefined } }] } })
       : 0;
+
+    // actas pendientes: Examen Complexivo (estudiantes con modalidad EXAMEN_COMPLEXIVO sin nota guardada)
+    const actasPendientesComplexivo = Number.isFinite(Number(id_ap))
+      ? await prisma.modalidades_elegidas.count({
+        where: {
+          periodo_id: Number(id_ap),
+          modalidad: 'EXAMEN_COMPLEXIVO',
+          academic_grades: {
+            none: {
+              module: 'complexivo',
+              id_academic_periods: Number(id_ap),
+              status: 'saved',
+            }
+          }
+        }
+      }).catch(() => 0)
+      : 0;
+
+    const actasPendientes = Number(actasPendientesUic || 0) + Number(actasPendientesComplexivo || 0);
 
     // certificados emitidos hoy (secretaría) en el período activo
     const certificadosEmitidosHoy = Number.isFinite(Number(id_ap))

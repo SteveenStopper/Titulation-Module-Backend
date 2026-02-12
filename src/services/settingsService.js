@@ -20,6 +20,13 @@ function startOfToday() {
   return d;
 }
 
+function normalizePeriodName(val) {
+  return String(val || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
 async function enforcePeriodExpirations() {
   const today = startOfToday();
   // Cerrar períodos activos vencidos
@@ -151,11 +158,30 @@ async function setActivePeriod({ id_academic_periods, name, external_period_id }
   const id = Number(id_academic_periods);
   if (!Number.isFinite(id)) { const e = new Error('id_academic_periods inválido'); e.status = 400; throw e; }
   await enforcePeriodExpirations();
-  const perCheck = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { fecha_fin: true } });
+  const perCheck = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { fecha_fin: true, nombre: true } });
   if (perCheck?.fecha_fin && perCheck.fecha_fin < startOfToday()) {
     const e = new Error('No se puede activar un período cuya fecha fin ya pasó');
     e.status = 409;
     throw e;
+  }
+
+  // Validar que el período del instituto seleccionado coincida con el nombre del período local.
+  if (external_period_id !== undefined && external_period_id !== null && external_period_id !== '') {
+    const extId = Number(external_period_id);
+    if (!Number.isFinite(extId)) { const e = new Error('external_period_id inválido'); e.status = 400; throw e; }
+    const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+    const extRows = await prisma.$queryRawUnsafe(
+      `SELECT ID_PERIODO AS id, NOMBRE_PERIODO AS name FROM ${EXT_SCHEMA}.MATRICULACION_PERIODO WHERE ID_PERIODO = ? LIMIT 1`,
+      extId
+    );
+    const ext = Array.isArray(extRows) && extRows[0] ? extRows[0] : null;
+    if (!ext) { const e = new Error('Período del instituto no encontrado'); e.status = 404; throw e; }
+    const localName = perCheck?.nombre != null ? String(perCheck.nombre) : String(name || '');
+    if (normalizePeriodName(ext.name) !== normalizePeriodName(localName)) {
+      const e = new Error('El período del instituto seleccionado no coincide con el nombre del período local');
+      e.status = 409;
+      throw e;
+    }
   }
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -208,6 +234,21 @@ async function listAllPeriods() {
 
 // Crear un período académico
 async function createPeriod({ name, date_start, date_end, status }) {
+  const today = startOfToday();
+  const ds = new Date(date_start);
+  const de = new Date(date_end);
+  if (isNaN(ds.getTime()) || isNaN(de.getTime())) {
+    const e = new Error('Fechas inválidas');
+    e.status = 400;
+    throw e;
+  }
+  // Regla: no permitir crear períodos con fechas pasadas
+  if (ds < today || de < today) {
+    const e = new Error('No se puede crear un período con fechas pasadas');
+    e.status = 409;
+    throw e;
+  }
+
   // Validar duplicado por nombre (insensible a mayúsculas/minúsculas) usando SQL directo por compatibilidad
   const dupRows = await prisma.$queryRawUnsafe(
     'SELECT 1 FROM periodos WHERE LOWER(nombre) = LOWER(?) LIMIT 1',
@@ -217,11 +258,24 @@ async function createPeriod({ name, date_start, date_end, status }) {
     const e = new Error('Ya existe un período con ese nombre');
     e.status = 409; throw e;
   }
+
+  // Validar duplicado por fechas (mismo inicio/fin)
+  const dupDateRows = await prisma.$queryRawUnsafe(
+    'SELECT 1 FROM periodos WHERE DATE(fecha_inicio) = DATE(?) AND DATE(fecha_fin) = DATE(?) LIMIT 1',
+    date_start,
+    date_end,
+  );
+  if (Array.isArray(dupDateRows) && dupDateRows.length > 0) {
+    const e = new Error('Ya existe un período con las mismas fechas');
+    e.status = 409;
+    throw e;
+  }
+
   const created = await prisma.periodos.create({
     data: {
       nombre: name,
-      fecha_inicio: new Date(date_start),
-      fecha_fin: new Date(date_end),
+      fecha_inicio: ds,
+      fecha_fin: de,
       ...(status ? { estado: status } : {}),
     },
     select: { periodo_id: true, nombre: true }

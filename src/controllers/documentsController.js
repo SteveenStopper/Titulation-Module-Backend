@@ -2,6 +2,7 @@ const documentsService = require("../services/documentsService");
 const { z } = require("zod");
 const fs = require("fs");
 const path = require("path");
+const prisma = require("../../prisma/client");
 
 function getUserId(req) {
   const u = req.user || {};
@@ -374,7 +375,44 @@ async function download(req, res, next) {
     const canReview = hasAnyRole(req, ["Secretaria", "Coordinador"]);
     const me = getUserId(req);
     const ownerId = Number.isFinite(doc.usuario_id) ? doc.usuario_id : (Number.isFinite(doc.id_user) ? doc.id_user : undefined);
-    if (!canReview && ownerId !== me) { const e=new Error("No autorizado: dueño requerido"); e.status=403; throw e; }
+
+    if (!canReview && ownerId !== me) {
+      const roles = getRoles(req);
+      const isDocente = roles.includes('Docente');
+      // Permitir descarga a Docente asignado (Tutor o Lector) solo para informe final UIC
+      if (isDocente && String(doc.tipo) === 'uic_final' && Number.isFinite(Number(ownerId)) && Number.isFinite(Number(me))) {
+        try {
+          const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+          const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+          const id_ap = Number(per?.id_academic_periods);
+          if (Number.isFinite(id_ap)) {
+            const asign = await prisma.uic_asignaciones.findFirst({
+              where: {
+                periodo_id: id_ap,
+                estudiante_id: Number(ownerId),
+                OR: [{ tutor_usuario_id: Number(me) }, { lector_usuario_id: Number(me) }]
+              },
+              select: { uic_asignacion_id: true }
+            });
+            if (!asign) {
+              const e = new Error('No autorizado: docente no asignado');
+              e.status = 403;
+              throw e;
+            }
+          } else {
+            const e = new Error('No autorizado: no hay período activo');
+            e.status = 403;
+            throw e;
+          }
+        } catch (err) {
+          throw err;
+        }
+      } else {
+        const e = new Error("No autorizado: dueño requerido");
+        e.status = 403;
+        throw e;
+      }
+    }
     const abs = toAbsoluteUploadPath(doc.ruta_archivo);
     res.setHeader("Content-Type", doc.mime_type || "application/octet-stream");
     const fname = doc.nombre_archivo || `documento_${id}`;

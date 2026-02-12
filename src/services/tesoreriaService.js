@@ -90,15 +90,18 @@ async function listExternalStudentsForPeriod({ external_period_id, offset, limit
   return prisma.$queryRawUnsafe(sql, Number(external_period_id), Number(external_period_id), Number(offset), Number(limit));
 }
 
-async function listResumen({ page = 1, pageSize = 20, minSem = null }) {
+async function listResumen({ page = 1, pageSize = 20, minSem = null, academicPeriodId = undefined, careerId = undefined }) {
   const _page = Math.max(1, Number(page) || 1);
   const _pageSize = Math.max(1, Number(pageSize) || 20);
   const offset = (_page - 1) * _pageSize;
   const limit = _pageSize;
 
-  // Usar período activo (app_settings.active_period) para mantener consistencia con el FE
-  const active = await settingsService.getActivePeriod();
-  const localPeriodId = Number(active?.id_academic_periods);
+  // Usar período activo (app_settings.active_period) salvo override
+  let localPeriodId = Number(academicPeriodId);
+  if (!Number.isFinite(localPeriodId)) {
+    const active = await settingsService.getActivePeriod();
+    localPeriodId = Number(active?.id_academic_periods);
+  }
   if (!Number.isFinite(localPeriodId)) {
     return { data: [], pagination: { page: _page, pageSize: _pageSize } };
   }
@@ -124,6 +127,12 @@ async function listResumen({ page = 1, pageSize = 20, minSem = null }) {
     carrera_id: Number(r.carrera_id),
     carrera_nombre: r.carrera,
   }));
+
+  // Filtro por carrera (best-effort; puede afectar paginación)
+  const cid = Number(careerId);
+  if (Number.isFinite(cid) && cid > 0) {
+    rows = (rows || []).filter(r => Number(r.carrera_id) === cid);
+  }
 
   // Adjuntar estado de validación (persistente) desde la BD local
   const ids = (rows || []).map(r => Number(r.estudiante_id)).filter(Number.isFinite);
@@ -162,6 +171,37 @@ async function listResumen({ page = 1, pageSize = 20, minSem = null }) {
   }
 
   return { data: rows, pagination: { page: _page, pageSize: _pageSize } };
+}
+
+async function listApprovedStudentsForPeriod({ academicPeriodId, careerId } = {}) {
+  let localPeriodId = Number(academicPeriodId);
+  if (!Number.isFinite(localPeriodId)) {
+    const active = await settingsService.getActivePeriod();
+    localPeriodId = Number(active?.id_academic_periods);
+  }
+  if (!Number.isFinite(localPeriodId)) return { localPeriodId: null, externalPeriodId: null, rows: [] };
+
+  const externalPeriodId = await getExternalPeriodIdForLocalPeriod(localPeriodId);
+  if (!Number.isFinite(Number(externalPeriodId))) return { localPeriodId, externalPeriodId: null, rows: [] };
+
+  // Para reportes: traer un conjunto amplio (sin paginación estricta)
+  let rows = await viewsDao.getNotasResumenAprobadosByPeriodo({
+    external_period_id: Number(externalPeriodId),
+    offset: 0,
+    limit: 10000,
+  });
+  rows = (rows || []).map(r => ({
+    estudiante_id: Number(r.estudiante_id),
+    cedula: r.cedula,
+    nombre: r.nombre,
+    carrera_id: Number(r.carrera_id),
+    carrera_nombre: r.carrera,
+  }));
+
+  const cid = Number(careerId);
+  if (Number.isFinite(cid) && cid > 0) rows = (rows || []).filter(r => Number(r.carrera_id) === cid);
+
+  return { localPeriodId, externalPeriodId: Number(externalPeriodId), rows };
 }
 
 async function getEstadoFinanciero(estudianteId) {
@@ -352,4 +392,12 @@ async function ensureCertificado({ periodo_id, estudiante_id, issuer_id }) {
   return created.certificado_doc_id;
 }
 
-module.exports = { listResumen, aprobar, rechazar, reconsiderar, generarCertificado, ensureCertificado };
+module.exports = {
+  listResumen,
+  listApprovedStudentsForPeriod,
+  aprobar,
+  rechazar,
+  reconsiderar,
+  generarCertificado,
+  ensureCertificado,
+};

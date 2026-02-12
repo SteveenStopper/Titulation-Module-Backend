@@ -1,6 +1,8 @@
 const { z } = require("zod");
 const tesoreriaService = require("../services/tesoreriaService");
 const documentsService = require("../services/documentsService");
+const prisma = require("../../prisma/client");
+const viewsDao = require("../daos/viewsDao");
 
 async function listResumen(req, res, next) {
   try {
@@ -8,9 +10,11 @@ async function listResumen(req, res, next) {
       page: z.coerce.number().int().positive().optional(),
       pageSize: z.coerce.number().int().positive().optional(),
       minSem: z.coerce.number().int().min(0).max(4).optional(),
+      academicPeriodId: z.coerce.number().int().optional(),
+      careerId: z.coerce.number().int().optional(),
     });
-    const { page, pageSize, minSem } = schema.parse(req.query || {});
-    const result = await tesoreriaService.listResumen({ page, pageSize, minSem });
+    const { page, pageSize, minSem, academicPeriodId, careerId } = schema.parse(req.query || {});
+    const result = await tesoreriaService.listResumen({ page, pageSize, minSem, academicPeriodId, careerId });
     res.json(result);
   } catch (err) {
     if (err.name === "ZodError") { err.status = 400; err.message = err.errors.map(e=>e.message).join(", "); }
@@ -69,6 +73,133 @@ async function generateCertificate(req, res, next) {
 }
 
 module.exports = { listResumen, approve, reject, reconsider, generateCertificate };
+
+async function reportComprobantes(req, res, next) {
+  try {
+    const schema = z.object({
+      academicPeriodId: z.coerce.number().int().optional(),
+      careerId: z.coerce.number().int().optional(),
+    });
+    const { academicPeriodId, careerId } = schema.parse(req.query || {});
+
+    const { localPeriodId, rows } = await tesoreriaService.listApprovedStudentsForPeriod({
+      academicPeriodId,
+      careerId,
+    });
+    if (!Number.isFinite(Number(localPeriodId))) return res.json({ data: [], periodId: null });
+
+    // Scoping por rango de fechas del período (documentos no tiene periodo_id)
+    let start = null;
+    let end = null;
+    try {
+      const per = await prisma.periodos.findUnique({
+        where: { periodo_id: Number(localPeriodId) },
+        select: { fecha_inicio: true, fecha_fin: true },
+      });
+      if (per?.fecha_inicio && per?.fecha_fin) {
+        start = new Date(per.fecha_inicio); start.setHours(0, 0, 0, 0);
+        end = new Date(per.fecha_fin); end.setHours(23, 59, 59, 999);
+      }
+    } catch (_) {}
+
+    const userIds = (rows || []).map(r => Number(r.estudiante_id)).filter(Number.isFinite);
+    if (!userIds.length) return res.json({ data: [], periodId: Number(localPeriodId) });
+
+    const tipos = ['comprobante_certificados', 'comprobante_titulacion', 'comprobante_acta_grado'];
+
+    const docs = await prisma.documentos.findMany({
+      where: {
+        usuario_id: { in: userIds },
+        tipo: { in: tipos },
+        ...(start && end ? { creado_en: { gte: start, lte: end } } : {}),
+        AND: [
+          {
+            OR: [
+              { NOT: { pago_monto: null } },
+              { NOT: { pago_referencia: null } },
+              { ruta_archivo: { startsWith: 'uploads/vouchers' } },
+            ],
+          },
+        ],
+      },
+      orderBy: [{ usuario_id: 'asc' }, { tipo: 'asc' }, { creado_en: 'desc' }, { documento_id: 'desc' }],
+      select: { usuario_id: true, tipo: true, estado: true, creado_en: true },
+    }).catch(() => []);
+
+    // pick last doc per (user,tipo)
+    const lastMap = new Map();
+    for (const d of (docs || [])) {
+      const key = `${Number(d.usuario_id)}|${String(d.tipo)}`;
+      if (!lastMap.has(key)) lastMap.set(key, d);
+    }
+
+    const getStatus = (uid, tipo) => {
+      const d = lastMap.get(`${Number(uid)}|${String(tipo)}`);
+      return d?.estado || '';
+    };
+
+    const data = (rows || []).map((r, idx) => ({
+      nro: idx + 1,
+      estudiante_id: Number(r.estudiante_id),
+      estudiante: String(r.nombre || '').trim() || `Usuario ${r.estudiante_id}`,
+      carrera: String(r.carrera_nombre || '').trim() || '',
+      comprobante_certificados: getStatus(r.estudiante_id, 'comprobante_certificados'),
+      comprobante_titulacion: getStatus(r.estudiante_id, 'comprobante_titulacion'),
+      comprobante_acta_grado: getStatus(r.estudiante_id, 'comprobante_acta_grado'),
+    }));
+
+    res.json({ periodId: Number(localPeriodId), data });
+  } catch (err) {
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); }
+    next(err);
+  }
+}
+
+module.exports.reportComprobantes = reportComprobantes;
+
+async function reportAranceles(req, res, next) {
+  try {
+    const schema = z.object({
+      academicPeriodId: z.coerce.number().int().optional(),
+      careerId: z.coerce.number().int().optional(),
+    });
+    const { academicPeriodId, careerId } = schema.parse(req.query || {});
+
+    const { localPeriodId, rows } = await tesoreriaService.listApprovedStudentsForPeriod({
+      academicPeriodId,
+      careerId,
+    });
+    if (!Number.isFinite(Number(localPeriodId))) return res.json({ data: [], periodId: null });
+
+    const ids = (rows || []).map(r => Number(r.estudiante_id)).filter(Number.isFinite);
+    const validations = ids.length
+      ? await prisma.procesos_validaciones.findMany({
+        where: { proceso: 'tesoreria_aranceles', periodo_id: Number(localPeriodId), estudiante_id: { in: ids } },
+        select: { estudiante_id: true, estado: true },
+      }).catch(() => [])
+      : [];
+    const vMap = new Map((validations || []).map(v => [Number(v.estudiante_id), v]));
+
+    const data = (rows || []).map((r, idx) => {
+      const v = vMap.get(Number(r.estudiante_id));
+      const estado = v?.estado === 'approved' ? 'Activo' : 'Inactivo';
+      return {
+        nro: idx + 1,
+        estudiante_id: Number(r.estudiante_id),
+        estudiante: String(r.nombre || '').trim() || `Usuario ${r.estudiante_id}`,
+        carrera: String(r.carrera_nombre || '').trim() || '',
+        estado_aranceles: estado,
+      };
+    });
+
+    res.json({ periodId: Number(localPeriodId), data });
+  } catch (err) {
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); }
+    next(err);
+  }
+}
+
+module.exports.reportAranceles = reportAranceles;
 
 async function downloadCertificateByDoc(req, res, next) {
   try {

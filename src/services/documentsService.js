@@ -75,6 +75,11 @@ async function listDocuments(query) {
     'cert_vinculacion', 'cert_ingles', 'cert_practicas',
   ];
 
+  const tiposMatriculaSecretaria = [
+    'solicitud', 'oficio',
+    'cert_vinculacion', 'cert_ingles', 'cert_practicas',
+  ];
+
   const where = {
     ...(tipo ? { tipo } : {}),
     ...(Number.isFinite(usuario_id) ? { usuario_id } : {}),
@@ -85,6 +90,8 @@ async function listDocuments(query) {
   if (!tipo) {
     if (category === 'matricula') {
       where.tipo = { in: tiposMatricula };
+    } else if (category === 'matricula_secretaria') {
+      where.tipo = { in: tiposMatriculaSecretaria };
     } else if (category === 'pagos') {
       where.tipo = { in: tiposComprobantes };
     }
@@ -97,9 +104,19 @@ async function listDocuments(query) {
       : { notIn: ['cert_secretaria', 'cert_tesoreria'] };
   }
 
+  // Secretaría: excluir certificados auto-generados que se guardan con nombre tipo: cert_*_*.pdf
+  // (pero mantener los que sube manualmente el estudiante)
+  if (category === 'matricula_secretaria') {
+    where.NOT = [
+      { tipo: 'cert_ingles', nombre_archivo: { startsWith: 'cert_ingles_' } },
+      { tipo: 'cert_practicas', nombre_archivo: { startsWith: 'cert_practicas_' } },
+      { tipo: 'cert_vinculacion', nombre_archivo: { startsWith: 'cert_vinculacion_' } },
+    ];
+  }
+
   // Period-scoping by date range for period-sensitive categories.
   // The documentos table does not have periodo_id, so we use creado_en within the active period range.
-  if ((category === 'matricula' || category === 'pagos') && !where.creado_en) {
+  if ((category === 'matricula' || category === 'matricula_secretaria' || category === 'pagos') && !where.creado_en) {
     const apId = Number.isFinite(Number(overrideAp)) ? Number(overrideAp) : await getActiveAcademicPeriodId();
     if (Number.isFinite(Number(apId))) {
       const range = await getPeriodDateRange(apId);

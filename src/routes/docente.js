@@ -188,18 +188,48 @@ router.get('/tribunal-evaluador/estudiantes', authorize('Docente','Administrador
     } catch (_) {}
     if (!Number.isFinite(Number(id_ap))) return res.json([]);
 
-    // Asignaciones guardadas por Coordinador (tabla tribunal_assignments)
-    const asigns = await prisma.tribunal_assignments.findMany({
-      where: {
-        id_academic_periods: Number(id_ap),
-        OR: [
-          { id_president: Number(me) },
-          { id_secretary: Number(me) },
-          { id_vocal: Number(me) },
-        ]
-      },
-      select: { id_user_student: true, id_president: true, id_secretary: true, id_vocal: true }
-    });
+    const hasTribunalAssignments = Boolean(prisma?.tribunal_assignments && typeof prisma.tribunal_assignments.findMany === 'function');
+
+    let asigns = [];
+    if (hasTribunalAssignments) {
+      // Asignaciones guardadas por Coordinador (tabla tribunal_assignments)
+      asigns = await prisma.tribunal_assignments.findMany({
+        where: {
+          id_academic_periods: Number(id_ap),
+          OR: [
+            { id_president: Number(me) },
+            { id_secretary: Number(me) },
+            { id_vocal: Number(me) },
+          ]
+        },
+        select: { id_user_student: true, id_president: true, id_secretary: true, id_vocal: true }
+      });
+    } else {
+      // Fallback (UIC): miembros del tribunal por asignación UIC
+      const miembros = await prisma.uic_tribunal_miembros.findMany({
+        where: { docente_usuario_id: Number(me) },
+        select: { uic_asignacion_id: true, rol_tribunal: true }
+      }).catch(() => []);
+      const asignIds = Array.from(new Set((miembros || []).map(m => Number(m.uic_asignacion_id)).filter(n => Number.isFinite(n))));
+      if (asignIds.length > 0) {
+        const uicAsigns = await prisma.uic_asignaciones.findMany({
+          where: { uic_asignacion_id: { in: asignIds }, periodo_id: Number(id_ap) },
+          select: { uic_asignacion_id: true, estudiante_id: true }
+        }).catch(() => []);
+        const roleByAsign = new Map((miembros || []).map(m => [Number(m.uic_asignacion_id), String(m.rol_tribunal || '')]));
+        asigns = (uicAsigns || []).map(a => {
+          const rol = roleByAsign.get(Number(a.uic_asignacion_id));
+          const rid = String(rol || '');
+          return {
+            id_user_student: Number(a.estudiante_id),
+            id_president: rid === 'miembro_1' ? Number(me) : null,
+            id_secretary: rid === 'miembro_2' ? Number(me) : null,
+            id_vocal: rid === 'miembro_3' ? Number(me) : null,
+          };
+        });
+      }
+    }
+
     if (!asigns || asigns.length === 0) return res.json([]);
 
     const estIds = Array.from(new Set(asigns.map(a => Number(a.id_user_student)).filter(x => Number.isFinite(x))));
@@ -715,6 +745,7 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
     const data = [];
     for (const a of asigns) {
       let docUrl = null;
+      let documentoId = null;
       try {
         const doc = await prisma.documentos.findFirst({
           where: {
@@ -725,15 +756,17 @@ router.get('/lector/estudiantes', authorize('Docente','Administrador','Coordinad
             ]
           },
           orderBy: { creado_en: 'desc' },
-          select: { ruta_archivo: true }
+          select: { documento_id: true, ruta_archivo: true }
         });
         docUrl = doc?.ruta_archivo || null;
+        documentoId = doc?.documento_id != null ? Number(doc.documento_id) : null;
       } catch (_) {}
       data.push({
         id: String(a.estudiante_id),
         nombre: nameMap.get(a.estudiante_id) || `Usuario ${a.estudiante_id}`,
         carrera: careerNameMap[a.carrera_id] || topicCareerMap[Number(a.estudiante_id)] || null,
         documentoUrl: docUrl,
+        documentoId,
         calificacion: a.lector_nota != null ? Number(a.lector_nota) : null,
         observacion: a.lector_observacion || ''
       });
@@ -773,12 +806,22 @@ router.put('/lector/estudiantes/:estudianteId/review', authorize('Docente','Admi
     } catch (_) {}
     if (!Number.isFinite(Number(id_ap))) { const e=new Error('No hay período activo'); e.status=400; throw e; }
 
+    const roles = Array.isArray(req.user?.roles) ? req.user.roles.map(String) : (req.user?.role ? [String(req.user.role)] : []);
+    const isAdmin = roles.includes('Administrador') || roles.includes('Admin') || roles.includes('ADMIN');
+
     // verificar que soy lector asignado del estudiante
     const asign = await prisma.uic_asignaciones.findFirst({
       where: { periodo_id: Number(id_ap), lector_usuario_id: Number(me), estudiante_id: Number(estudianteId) },
-      select: { uic_asignacion_id: true }
+      select: { uic_asignacion_id: true, lector_nota: true, lector_observacion: true }
     });
     if (!asign) { const e=new Error('Estudiante no asignado a su lectura'); e.status=404; throw e; }
+
+    const alreadyReviewed = asign.lector_nota != null || (typeof asign.lector_observacion === 'string' && asign.lector_observacion.trim().length > 0);
+    if (alreadyReviewed && !isAdmin) {
+      const e = new Error('La calificación ya fue registrada. Solo el Administrador puede editarla.');
+      e.status = 403;
+      throw e;
+    }
 
     // actualizar valores en la asignación
     await prisma.uic_asignaciones.update({
