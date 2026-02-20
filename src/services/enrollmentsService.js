@@ -5,6 +5,31 @@ function safeSchemaName(name) {
   return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
 }
 
+async function getStudentCareerName(careerId) {
+  const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+  const id = Number(careerId);
+  if (!Number.isFinite(id)) return null;
+  try {
+    const rows = await prisma.$queryRawUnsafe(
+      `SELECT NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS = ? LIMIT 1`,
+      Number(id)
+    );
+    const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    return row?.nombre != null ? String(row.nombre) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function getStudentCareer({ id_user }) {
+  const career_id = await getStudentCareerId(Number(id_user));
+  const career_name = Number.isFinite(Number(career_id)) ? await getStudentCareerName(Number(career_id)) : null;
+  return {
+    career_id: Number.isFinite(Number(career_id)) ? Number(career_id) : null,
+    career_name: career_name || null,
+  };
+}
+
 async function getStudentCareerId(estudianteId) {
   // La carrera del estudiante vive en el esquema externo (SIGALA). Lo usamos para persistir modalidades_elegidas.carrera_id
   // para que otros módulos (UIC/Complexivo) puedan filtrar por carrera.
@@ -124,4 +149,4 @@ async function setStatus({ id, status }) {
   return { id: Number(id), status };
 }
 
-module.exports = { getStudentCareerId, selectModality, getCurrentSelection, list, setStatus };
+module.exports = { getStudentCareerId, getStudentCareer, selectModality, getCurrentSelection, list, setStatus };

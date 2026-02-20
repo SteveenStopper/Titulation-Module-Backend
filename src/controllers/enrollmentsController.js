@@ -25,6 +25,21 @@ async function select(req, res, next) {
   }
 }
 
+async function career(req, res, next) {
+  try {
+    const id_user = req.user?.sub;
+    if (!id_user) {
+      const err = new Error("No autorizado");
+      err.status = 401;
+      throw err;
+    }
+    const result = await enrollmentsService.getStudentCareer({ id_user });
+    res.json(result || { career_id: null, career_name: null });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function current(req, res, next) {
   try {
     const schema = z.object({ academicPeriodId: z.coerce.number().int().optional() });
@@ -46,7 +61,6 @@ async function current(req, res, next) {
   }
 }
 
-module.exports = { select, current };
 async function list(req, res, next) {
   try {
     const schema = z.object({
@@ -78,4 +92,4 @@ async function reject(req, res, next) {
   } catch (err) { next(err); }
 }
 
-module.exports = { select, current, list, approve, reject };
+module.exports = { select, current, career, list, approve, reject };

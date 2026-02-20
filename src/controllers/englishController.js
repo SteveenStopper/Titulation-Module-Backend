@@ -258,7 +258,7 @@ async function recientes(req, res, next) {
 
     const since = new Date(); since.setDate(since.getDate() - Number(days));
 
-    const [grades, docs] = await Promise.all([
+    let [grades, docs] = await Promise.all([
       prisma.academic_grades.findMany({
         where: { module: 'english', id_academic_periods: Number(id_ap), updated_at: { gte: since } },
         orderBy: { updated_at: 'desc' },
@@ -278,6 +278,30 @@ async function recientes(req, res, next) {
       }).catch(() => []),
     ]);
 
+    // Fallback: si en el período activo no hay actividad en la ventana de días,
+    // mostrar la más reciente del módulo (sin restricción de fecha).
+    if ((!grades || grades.length === 0) && (!docs || docs.length === 0)) {
+      [grades, docs] = await Promise.all([
+        prisma.academic_grades.findMany({
+          where: { module: 'english' },
+          orderBy: { updated_at: 'desc' },
+          take: 10,
+          select: {
+            updated_at: true,
+            status: true,
+            id_user: true,
+            usuarios_academic_grades_id_userTousuarios: { select: { usuario_id: true, nombre: true, apellido: true } },
+          },
+        }).catch(() => []),
+        prisma.documentos.findMany({
+          where: { tipo: 'cert_ingles' },
+          orderBy: { creado_en: 'desc' },
+          take: 10,
+          select: { creado_en: true, usuario_id: true },
+        }).catch(() => []),
+      ]);
+    }
+
     const items = [];
     for (const g of (grades || [])) {
       const u = g.usuarios_academic_grades_id_userTousuarios;
@@ -289,9 +313,16 @@ async function recientes(req, res, next) {
         estado: String(g.status) === 'validated' ? 'completado' : 'pendiente',
       });
     }
+    // Resolver nombres para emisiones de certificados
+    const docUserIds = Array.from(new Set((docs || []).map(d => Number(d.usuario_id)).filter(Number.isFinite)));
+    const docUsers = docUserIds.length
+      ? await prisma.usuarios.findMany({ where: { usuario_id: { in: docUserIds } }, select: { usuario_id: true, nombre: true, apellido: true } }).catch(() => [])
+      : [];
+    const docNameMap = new Map((docUsers || []).map(u => [Number(u.usuario_id), `${u.nombre} ${u.apellido}`.trim()]));
+
     for (const d of (docs || [])) {
       items.push({
-        estudiante: `Usuario ${d.usuario_id}`,
+        estudiante: docNameMap.get(Number(d.usuario_id)) || `Usuario ${d.usuario_id}`,
         tramite: 'Emisión de certificado',
         fecha: d.creado_en,
         estado: 'completado',

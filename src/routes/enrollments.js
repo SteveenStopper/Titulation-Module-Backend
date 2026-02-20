@@ -11,6 +11,10 @@ router.post("/select", authorize('Estudiante','Administrador','Coordinador'), ct
 // requiere usuario autenticado para leer req.user.sub
 router.get("/current", authorize('Estudiante','Administrador','Coordinador'), ctrl.current);
 
+// GET /enrollments/career
+// devuelve carrera del estudiante autenticado (id y nombre)
+router.get("/career", authorize('Estudiante','Administrador','Coordinador'), ctrl.career);
+
 // GET /enrollments?status=&academicPeriodId=&modality=
 router.get("/", authorize('Secretaria', 'Coordinador', 'Administrador'), ctrl.list);
 

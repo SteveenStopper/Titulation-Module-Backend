@@ -30,8 +30,10 @@ module.exports = async function setUploadDir(req, res, next) {
     if (!Number.isFinite(idUser)) {
       const maybeSub = req.user && req.user.sub !== undefined ? Number(req.user.sub) : NaN;
       const maybeId = req.user && req.user.id !== undefined ? Number(req.user.id) : NaN;
+      const maybeIdUser = req.user && req.user.id_user !== undefined ? Number(req.user.id_user) : NaN;
       if (Number.isFinite(maybeSub)) idUser = maybeSub;
       else if (Number.isFinite(maybeId)) idUser = maybeId;
+      else if (Number.isFinite(maybeIdUser)) idUser = maybeIdUser;
     }
     if (!Number.isFinite(idUser)) {
       return res.status(400).json({ error: "id_user es requerido y debe ser numérico" });

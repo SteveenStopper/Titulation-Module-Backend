@@ -73,7 +73,7 @@ model documentos {
   documento_id          Int                     @id @default(autoincrement()) @db.UnsignedInt
   usuario_id            Int?                    @db.UnsignedInt
   estudiante_id         Int?                    @db.UnsignedInt
-  tipo                  documentos_tipo
+  tipo                  documentos_tipo?
   nombre_archivo        String                  @db.VarChar(255)
   ruta_archivo          String                  @db.VarChar(500)
   mime_type             String?                 @db.VarChar(100)
@@ -336,21 +336,6 @@ enum uic_tribunal_miembros_rol_tribunal {
   miembro_3
 }
 
-enum documentos_tipo {
-  comprobante_certificados
-  comprobante_titulacion
-  comprobante_acta_grado
-  solicitud
-  oficio
-  uic_final
-  uic_acta_tribunal
-  cert_tesoreria
-  cert_secretaria
-  cert_vinculacion
-  cert_ingles
-  cert_practicas
-}
-
 enum modalidades_elegidas_modalidad {
   UIC
   EXAMEN_COMPLEXIVO
@@ -380,4 +365,22 @@ enum academic_grades_module {
   vinculacion
   practicas
   complexivo
+}
+
+enum documentos_tipo {
+  comprobante_certificados
+  comprobante_titulacion
+  comprobante_acta_grado
+  solicitud
+  oficio
+  uic_final
+  uic_acta_tribunal
+  cert_tesoreria
+  cert_secretaria
+  cert_vinculacion
+  cert_ingles
+  cert_practicas
+  cert_no_adeudar
+  cert_aprobacion_malla
+  capt_examen_complexivo
 }

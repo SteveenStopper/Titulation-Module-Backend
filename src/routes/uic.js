@@ -506,14 +506,20 @@ router.get('/admin/asignaciones/tribunal', authorize('Coordinador','Administrado
         const m1 = arr.find(x => String(x.rol_tribunal) === 'miembro_1');
         const m2 = arr.find(x => String(x.rol_tribunal) === 'miembro_2');
         const m3 = arr.find(x => String(x.rol_tribunal) === 'miembro_3');
+        const presidente_id = m1?.docente_usuario_id != null ? Number(m1.docente_usuario_id) : null;
+        const secretario_id = m2?.docente_usuario_id != null ? Number(m2.docente_usuario_id) : null;
+        const vocal_id = m3?.docente_usuario_id != null ? Number(m3.docente_usuario_id) : null;
         return {
           id_user: Number(a.estudiante_id),
           fullname: nameMap.get(Number(a.estudiante_id)) || `Usuario ${a.estudiante_id}`,
           career_id: Number.isFinite(Number(careerId)) ? Number(careerId) : (a.carrera_id != null ? Number(a.carrera_id) : null),
           career_name: topicCareerMap.get(Number(a.estudiante_id)) || null,
-          presidente: m1?.docente_usuario_id ? (nameMap.get(Number(m1.docente_usuario_id)) || null) : null,
-          secretario: m2?.docente_usuario_id ? (nameMap.get(Number(m2.docente_usuario_id)) || null) : null,
-          vocal: m3?.docente_usuario_id ? (nameMap.get(Number(m3.docente_usuario_id)) || null) : null,
+          presidente_id: Number.isFinite(Number(presidente_id)) ? Number(presidente_id) : null,
+          secretario_id: Number.isFinite(Number(secretario_id)) ? Number(secretario_id) : null,
+          vocal_id: Number.isFinite(Number(vocal_id)) ? Number(vocal_id) : null,
+          presidente: presidente_id ? (nameMap.get(Number(presidente_id)) || null) : null,
+          secretario: secretario_id ? (nameMap.get(Number(secretario_id)) || null) : null,
+          vocal: vocal_id ? (nameMap.get(Number(vocal_id)) || null) : null,
         };
       })
       .sort((x,y)=> String(x.fullname).localeCompare(String(y.fullname)));
@@ -1238,7 +1244,7 @@ router.use(requireModality("UIC"));
 
 // GET /uic/estudiante/avance - notas por parcial y tutor para el estudiante autenticado en el período activo
 router.get('/estudiante/avance', authorize('Estudiante','Administrador','Coordinador'), async (req, res, next) => {
-  const fallback = { tutorNombre: null, p1: null, p2: null, p3: null };
+  const fallback = { tutorId: null, tutorNombre: null, p1: null, p2: null, p3: null };
   try {
     const me = req.user?.sub;
     const estudianteId = Number(me);
@@ -1262,10 +1268,11 @@ router.get('/estudiante/avance', authorize('Estudiante','Administrador','Coordin
     } catch (_) { return res.json(fallback); }
     if (!asign) return res.json(fallback);
 
+    const tutorId = Number.isFinite(Number(asign.tutor_usuario_id)) ? Number(asign.tutor_usuario_id) : null;
     let tutorNombre = null;
     try {
-      if (Number.isFinite(Number(asign.tutor_usuario_id))) {
-        const tutor = await prisma.usuarios.findUnique({ where: { usuario_id: Number(asign.tutor_usuario_id) }, select: { nombre: true, apellido: true } });
+      if (Number.isFinite(Number(tutorId))) {
+        const tutor = await prisma.usuarios.findUnique({ where: { usuario_id: Number(tutorId) }, select: { nombre: true, apellido: true } });
         tutorNombre = tutor ? `${tutor.nombre} ${tutor.apellido}`.trim() : null;
       }
     } catch (_) { /* keep null */ }
@@ -1275,14 +1282,14 @@ router.get('/estudiante/avance', authorize('Estudiante','Administrador','Coordin
         where: { uic_asignacion_id: Number(asign.uic_asignacion_id) },
         select: { parcial: true, nota: true }
       });
-      const result = { tutorNombre, p1: null, p2: null, p3: null };
+      const result = { tutorId, tutorNombre, p1: null, p2: null, p3: null };
       for (const n of notas) {
         const key = `p${Number(n.parcial)}`;
         if (key === 'p1' || key === 'p2' || key === 'p3') result[key] = n.nota != null ? Number(n.nota) : null;
       }
       return res.json(result);
     } catch (_) {
-      return res.json({ ...fallback, tutorNombre });
+      return res.json({ ...fallback, tutorId, tutorNombre });
     }
   } catch (err) { next(err); }
 });

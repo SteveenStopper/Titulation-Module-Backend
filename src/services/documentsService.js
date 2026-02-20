@@ -50,6 +50,9 @@ function sanitizeDocType(val) {
     "cert_vinculacion",
     "cert_ingles",
     "cert_practicas",
+    "cert_no_adeudar",
+    "cert_aprobacion_malla",
+    "capt_examen_complexivo",
   ];
   return allowed.includes(val) ? val : undefined;
 }
@@ -73,11 +76,13 @@ async function listDocuments(query) {
   const tiposMatricula = [
     'solicitud', 'oficio', 'uic_final', 'uic_acta_tribunal',
     'cert_vinculacion', 'cert_ingles', 'cert_practicas',
+    'cert_no_adeudar', 'cert_aprobacion_malla',
   ];
 
   const tiposMatriculaSecretaria = [
     'solicitud', 'oficio',
     'cert_vinculacion', 'cert_ingles', 'cert_practicas',
+    'cert_no_adeudar', 'cert_aprobacion_malla',
   ];
 
   const where = {

@@ -16,9 +16,12 @@ const {
   saveNotaTribunal,
   generateHoja,
   linkHoja,
+  unlinkHoja,
   listActasComplexivo,
   saveNotaComplexivo,
   generateActaComplexivo,
+  linkActaComplexivo,
+  unlinkActaComplexivo,
 } = require("../controllers/secretariaController");
 const prisma = require("../../prisma/client");
 
@@ -90,6 +93,9 @@ router.post("/actas/hoja", authorize('Secretaria', 'Administrador'), generateHoj
 // PUT /secretaria/actas/link-hoja { id_user_student, documento_id }
 router.put("/actas/link-hoja", authorize('Secretaria', 'Administrador'), linkHoja);
 
+// PUT /secretaria/actas/unlink-hoja { id_user_student }
+router.put("/actas/unlink-hoja", authorize('Secretaria', 'Administrador'), unlinkHoja);
+
 // ============== Acta de Grado (Examen Complexivo) ==============
 // GET /secretaria/actas/complexivo (lista estudiantes EXAMEN_COMPLEXIVO con nota guardada)
 router.get("/actas/complexivo", authorize('Secretaria', 'Administrador'), listActasComplexivo);
@@ -97,6 +103,12 @@ router.get("/actas/complexivo", authorize('Secretaria', 'Administrador'), listAc
 router.put("/actas/complexivo/nota", authorize('Secretaria', 'Administrador'), saveNotaComplexivo);
 // POST /secretaria/actas/complexivo/acta { id_user_student } -> PDF stream
 router.post("/actas/complexivo/acta", authorize('Secretaria', 'Administrador'), generateActaComplexivo);
+
+// PUT /secretaria/actas/complexivo/link-acta { id_user_student, documento_id }
+router.put("/actas/complexivo/link-acta", authorize('Secretaria', 'Administrador'), linkActaComplexivo);
+
+// PUT /secretaria/actas/complexivo/unlink-acta { id_user_student }
+router.put("/actas/complexivo/unlink-acta", authorize('Secretaria', 'Administrador'), unlinkActaComplexivo);
 
 // GET /secretaria/dashboard
 router.get("/dashboard", authorize('Secretaria', 'Administrador'), async (req, res, next) => {

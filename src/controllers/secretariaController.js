@@ -9,6 +9,53 @@ try {
   settingsService = require("./settingsService");
 }
 
+async function linkActaComplexivo(req, res, next) {
+  try {
+    const schema = z.object({ id_user_student: z.coerce.number().int(), documento_id: z.coerce.number().int() });
+    const { id_user_student, documento_id } = schema.parse(req.body || {});
+
+    const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+    const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+    const id_ap = per?.id_academic_periods;
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
+
+    await ensureAppSettingsTable();
+    await prisma.$executeRawUnsafe(
+      'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
+      `complexivo_acta_for_${Number(id_ap)}_${Number(id_user_student)}`,
+      JSON.stringify({ documento_id: Number(documento_id) })
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); }
+    next(err);
+  }
+}
+
+async function unlinkActaComplexivo(req, res, next) {
+  try {
+    const schema = z.object({ id_user_student: z.coerce.number().int() });
+    const { id_user_student } = schema.parse(req.body || {});
+
+    const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+    const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+    const id_ap = per?.id_academic_periods;
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
+
+    await ensureAppSettingsTable();
+    await prisma.$executeRawUnsafe(
+      'DELETE FROM app_settings WHERE setting_key = ?',
+      `complexivo_acta_for_${Number(id_ap)}_${Number(id_user_student)}`
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); }
+    next(err);
+  }
+}
+
 async function generarCertNotas(req, res, next) {
   try {
     const schema = z.object({
@@ -284,6 +331,22 @@ async function actaLista(req, res, next) {
   } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 
+async function unlinkHoja(req, res, next) {
+  try {
+    const schema = z.object({ id_user_student: z.coerce.number().int() });
+    const { id_user_student } = schema.parse(req.body || {});
+    const ap = await prisma.app_settings.findUnique({ where: { setting_key: 'active_period' } });
+    const per = ap?.setting_value ? (typeof ap.setting_value === 'string' ? JSON.parse(ap.setting_value) : ap.setting_value) : null;
+    const id_ap = per?.id_academic_periods;
+    if (!Number.isFinite(Number(id_ap))) { const e = new Error('No hay período activo'); e.status = 400; throw e; }
+    await prisma.uic_asignaciones.update({
+      where: { periodo_id_estudiante_id: { periodo_id: Number(id_ap), estudiante_id: Number(id_user_student) } },
+      data: { acta_doc_id: null }
+    });
+    res.json({ ok: true });
+  } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
+}
+
 async function actaFirmada(req, res, next) {
   try {
     const idActa = Number(req.params.id);
@@ -386,7 +449,8 @@ async function listActas(req, res, next) {
         carrera: careerNameMap[a.carrera_id] || null,
         tribunal: miembros.join(', '),
         calificacionTribunal: a.nota_tribunal != null ? Number(a.nota_tribunal) : null,
-        hojaCargada: Number.isFinite(Number(a.acta_doc_id))
+        hojaCargada: Number.isFinite(Number(a.acta_doc_id)),
+        hojaDocumentoId: Number.isFinite(Number(a.acta_doc_id)) ? Number(a.acta_doc_id) : null,
       };
     }).sort((x, y) => String(x.estudiante).localeCompare(String(y.estudiante)));
 
@@ -453,6 +517,16 @@ module.exports.listActas = listActas;
 module.exports.saveNotaTribunal = saveNotaTribunal;
 module.exports.generateHoja = generateHoja;
 module.exports.linkHoja = linkHoja;
+module.exports.unlinkHoja = unlinkHoja;
+
+async function ensureAppSettingsTable() {
+  await prisma.$executeRawUnsafe(
+    'CREATE TABLE IF NOT EXISTS app_settings (\n' +
+    '  setting_key VARCHAR(100) NOT NULL PRIMARY KEY,\n' +
+    '  setting_value TEXT NOT NULL\n' +
+    ')'
+  );
+}
 
 // ============== Acta de Grado (Examen Complexivo) ==============
 
@@ -485,6 +559,47 @@ async function listActasComplexivo(req, res, next) {
     }).catch(() => []);
     const gradeMap = new Map((grades || []).map(g => [Number(g.id_user), g.score != null ? Number(g.score) : null]));
 
+    // Documento acta complexivo (manual) guardado en app_settings
+    const actaDocMap = new Map();
+    try {
+      await ensureAppSettingsTable();
+      const setRows = await prisma.$queryRawUnsafe(
+        'SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE ?',
+        `complexivo_acta_for_${Number(id_ap)}_%`
+      );
+      if (Array.isArray(setRows)) {
+        for (const r of setRows) {
+          const key = String(r?.setting_key || '');
+          const m = key.match(/^complexivo_acta_for_(\d+)_(\d+)$/);
+          if (!m) continue;
+          const studentId = Number(m[2]);
+          if (!Number.isFinite(studentId)) continue;
+          try {
+            const val = typeof r.setting_value === 'string' ? JSON.parse(r.setting_value) : r.setting_value;
+            const docId = Number(val?.documento_id);
+            if (Number.isFinite(docId)) actaDocMap.set(studentId, docId);
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+
+    // Estado del documento (para gating en UI: deshabilitar subir si ya está aprobado)
+    const actaEstadoMap = new Map();
+    try {
+      const docIds = Array.from(new Set(Array.from(actaDocMap.values()).map(n => Number(n)).filter(Number.isFinite)));
+      if (docIds.length) {
+        const docs = await prisma.documentos.findMany({
+          where: { documento_id: { in: docIds } },
+          select: { documento_id: true, estado: true }
+        }).catch(() => []);
+        for (const d of (docs || [])) {
+          const id = Number(d.documento_id);
+          if (!Number.isFinite(id)) continue;
+          actaEstadoMap.set(id, String(d.estado || 'en_revision'));
+        }
+      }
+    } catch (_) {}
+
     // Map carrera desde esquema externo
     let careerNameMap = {};
     try {
@@ -503,6 +618,8 @@ async function listActasComplexivo(req, res, next) {
         estudiante: nameMap.get(Number(m.estudiante_id)) || `Usuario ${m.estudiante_id}`,
         carrera: careerNameMap[Number(m.carrera_id)] || null,
         calificacionComplexivo: gradeMap.has(Number(m.estudiante_id)) ? gradeMap.get(Number(m.estudiante_id)) : null,
+        actaDocumentoId: actaDocMap.get(Number(m.estudiante_id)) || null,
+        actaEstado: (actaEstadoMap.get(Number(actaDocMap.get(Number(m.estudiante_id)))) || null),
       }))
       .sort((a, b) => String(a.estudiante).localeCompare(String(b.estudiante)));
 
@@ -552,3 +669,5 @@ async function generateActaComplexivo(req, res, next) {
 module.exports.listActasComplexivo = listActasComplexivo;
 module.exports.saveNotaComplexivo = saveNotaComplexivo;
 module.exports.generateActaComplexivo = generateActaComplexivo;
+module.exports.linkActaComplexivo = linkActaComplexivo;
+module.exports.unlinkActaComplexivo = unlinkActaComplexivo;

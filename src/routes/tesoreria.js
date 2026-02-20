@@ -38,6 +38,19 @@ router.get('/reportes/comprobantes', authorize('Tesoreria', 'Administrador'), re
 // GET /tesoreria/reportes/aranceles?academicPeriodId=&careerId=
 router.get('/reportes/aranceles', authorize('Tesoreria', 'Administrador'), reportAranceles);
 
+// GET /tesoreria/carreras (desde esquema externo)
+router.get('/carreras', authorize('Tesoreria', 'Administrador'), async (req, res, next) => {
+  try {
+    const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+    try {
+      const rows = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS ORDER BY nombre ASC`);
+      return res.json(Array.isArray(rows) ? rows : []);
+    } catch (_) {
+      return res.json([]);
+    }
+  } catch (err) { next(err); }
+});
+
 // PUT /tesoreria/validaciones/approve
 router.put("/validaciones/approve", authorize('Tesoreria', 'Administrador'), approve);
 

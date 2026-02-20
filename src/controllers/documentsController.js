@@ -88,7 +88,17 @@ async function getById(req, res, next) {
     const canReview = hasAnyRole(req, ["Secretaria", "Coordinador"]);
     const me = getUserId(req);
     const ownerId = Number.isFinite(doc.usuario_id) ? doc.usuario_id : (Number.isFinite(doc.id_user) ? doc.id_user : undefined);
-    if (!canReview && ownerId !== me) {
+
+    // Permitir descarga de certificados por rol del módulo (aunque no sea el dueño)
+    // Esto evita que un usuario de área (Inglés / Vinculación y Prácticas) no pueda abrir
+    // certificados generados previamente por otro emisor del mismo rol.
+    const roles = getRoles(req);
+    const tipo = String(doc.tipo || '');
+    const canByModuleRole = (
+      (roles.includes('Ingles') && tipo === 'cert_ingles') ||
+      (roles.includes('Vinculacion_Practicas') && (tipo === 'cert_vinculacion' || tipo === 'cert_practicas'))
+    );
+    if (!canReview && !canByModuleRole && ownerId !== me) {
       const e = new Error("No autorizado: dueño requerido");
       e.status = 403;
       throw e;
@@ -105,7 +115,8 @@ async function create(req, res, next) {
       tipo: z.enum([
         'comprobante_certificados','comprobante_titulacion','comprobante_acta_grado',
         'solicitud','oficio','uic_final','uic_acta_tribunal',
-        'cert_tesoreria','cert_secretaria','cert_vinculacion','cert_ingles','cert_practicas'
+        'cert_tesoreria','cert_secretaria','cert_vinculacion','cert_ingles','cert_practicas',
+        'cert_no_adeudar','cert_aprobacion_malla','capt_examen_complexivo'
       ], { message: 'tipo inválido' }).or(z.string()),
       usuario_id: z.coerce.number().int({ message: 'usuario_id debe ser entero' }).optional(),
       estudiante_id: z.coerce.number().int().optional(),
@@ -376,8 +387,15 @@ async function download(req, res, next) {
     const me = getUserId(req);
     const ownerId = Number.isFinite(doc.usuario_id) ? doc.usuario_id : (Number.isFinite(doc.id_user) ? doc.id_user : undefined);
 
-    if (!canReview && ownerId !== me) {
-      const roles = getRoles(req);
+    // Permitir descarga de certificados por rol del módulo (aunque no sea el dueño)
+    const roles = getRoles(req);
+    const tipo = String(doc.tipo || '');
+    const canByModuleRole = (
+      (roles.includes('Ingles') && tipo === 'cert_ingles') ||
+      (roles.includes('Vinculacion_Practicas') && (tipo === 'cert_vinculacion' || tipo === 'cert_practicas'))
+    );
+
+    if (!canReview && !canByModuleRole && ownerId !== me) {
       const isDocente = roles.includes('Docente');
       // Permitir descarga a Docente asignado (Tutor o Lector) solo para informe final UIC
       if (isDocente && String(doc.tipo) === 'uic_final' && Number.isFinite(Number(ownerId)) && Number.isFinite(Number(me))) {

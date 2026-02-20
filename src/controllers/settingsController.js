@@ -107,6 +107,35 @@ async function closePeriod(req, res, next) {
   }
 }
 
+// PUT /settings/periods/:id/external-map  body: { external_period_id }
+async function setExternalPeriodMap(req, res, next) {
+  try {
+    const schema = z.object({
+      id: z.coerce.number().int(),
+      external_period_id: z.coerce.number().int(),
+    });
+    const parsed = schema.parse({ id: req.params.id, ...req.body });
+    const value = await settingsService.setExternalPeriodIdForLocalPeriod(parsed.id, parsed.external_period_id);
+    res.json(value);
+  } catch (err) {
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); }
+    res.status(err.status || 500).json({ message: err.message || 'Error guardando mapeo de período' });
+  }
+}
+
+// DELETE /settings/periods/:id
+async function deletePeriod(req, res, next) {
+  try {
+    const schema = z.object({ id: z.coerce.number().int() });
+    const { id } = schema.parse({ id: req.params.id });
+    const value = await settingsService.deletePeriod(id);
+    res.json(value);
+  } catch (err) {
+    if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); }
+    res.status(err.status || 500).json({ message: err.message || 'Error eliminando período' });
+  }
+}
+
 // DELETE /settings/active-period  (opcional: limpiar y poner todos inactivos)
 async function clearActivePeriod(req, res, next) {
   try {
@@ -140,6 +169,8 @@ module.exports.getAdminStats = getAdminStats;
 module.exports.updatePeriod = updatePeriod;
 module.exports.closePeriod = closePeriod;
 module.exports.clearActivePeriod = clearActivePeriod;
+module.exports.setExternalPeriodMap = setExternalPeriodMap;
+module.exports.deletePeriod = deletePeriod;
 
 async function setFeatureFlags(req, res, next) {
   try {

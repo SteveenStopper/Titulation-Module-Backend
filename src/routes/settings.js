@@ -13,7 +13,9 @@ router.get("/institute-periods", ctrl.listInstitutePeriods);
 router.post("/settings/periods", ctrl.createPeriod);
 // Editar/Cerrar periodos y limpiar activo
 router.put("/settings/periods/:id", authorize('Administrador','Coordinador'), ctrl.updatePeriod);
+router.put("/settings/periods/:id/external-map", authorize('Administrador','Coordinador'), ctrl.setExternalPeriodMap);
 router.post("/settings/periods/:id/close", authorize('Administrador','Coordinador'), ctrl.closePeriod);
+router.delete("/settings/periods/:id", authorize('Administrador','Coordinador'), ctrl.deletePeriod);
 router.delete("/settings/active-period", authorize('Administrador','Coordinador'), ctrl.clearActivePeriod);
 // Feature flags (habilitaciones)
 router.get("/settings/feature-flags", ctrl.getFeatureFlags);
