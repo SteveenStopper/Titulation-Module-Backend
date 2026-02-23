@@ -1,4 +1,5 @@
 const prisma = require("../../prisma/client");
+const vouchersService = require("./vouchersService");
 
 async function getPeriodDateRange(academicPeriodId) {
   const id = Number(academicPeriodId);
@@ -156,9 +157,25 @@ async function listDocuments(query) {
     }),
   ]);
 
+  let careerMap = null;
+  if (category === 'matricula_secretaria' || category === 'matricula') {
+    try {
+      careerMap = await vouchersService.getCareerMapForUserIds((data || []).map(d => d.usuario_id));
+    } catch (_) {
+      careerMap = null;
+    }
+  }
+
   return {
     data: (data || []).map(d => ({
       ...d,
+      ...(careerMap
+        ? {
+            career: careerMap.get(Number(d.usuario_id)) || null,
+            carrera: careerMap.get(Number(d.usuario_id)) || null,
+            career_name: careerMap.get(Number(d.usuario_id)) || null,
+          }
+        : {}),
       users: d.usuarios ? { id_user: d.usuarios.usuario_id, firstname: d.usuarios.nombre, lastname: d.usuarios.apellido } : null,
     })),
     pagination: {

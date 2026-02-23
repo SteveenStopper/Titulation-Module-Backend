@@ -131,22 +131,59 @@ router.get("/dashboard", authorize('Secretaria', 'Administrador'), async (req, r
       ? await prisma.uic_asignaciones.count({ where: { periodo_id: Number(id_ap), OR: [{ acta_doc_id: null }, { acta_doc_id: { equals: undefined } }] } })
       : 0;
 
-    // actas pendientes: Examen Complexivo (estudiantes con modalidad EXAMEN_COMPLEXIVO sin nota guardada)
-    const actasPendientesComplexivo = Number.isFinite(Number(id_ap))
-      ? await prisma.modalidades_elegidas.count({
-        where: {
-          periodo_id: Number(id_ap),
-          modalidad: 'EXAMEN_COMPLEXIVO',
-          academic_grades: {
-            none: {
-              module: 'complexivo',
-              id_academic_periods: Number(id_ap),
-              status: 'saved',
-            }
-          }
+    // actas pendientes: Examen Complexivo
+    // Pendiente cuando:
+    // - No tiene nota guardada (academic_grades saved) O
+    // - No tiene acta vinculada (app_settings: complexivo_acta_for_{period}_{student})
+    let actasPendientesComplexivo = 0;
+    if (Number.isFinite(Number(id_ap))) {
+      const mods = await prisma.modalidades_elegidas.findMany({
+        where: { periodo_id: Number(id_ap), modalidad: 'EXAMEN_COMPLEXIVO' },
+        select: { estudiante_id: true }
+      }).catch(() => []);
+
+      const estIds = Array.from(new Set((mods || [])
+        .map(m => Number(m.estudiante_id))
+        .filter(Number.isFinite)));
+
+      if (estIds.length) {
+        const grades = await prisma.academic_grades.findMany({
+          where: {
+            module: 'complexivo',
+            id_academic_periods: Number(id_ap),
+            id_user: { in: estIds },
+            status: 'saved'
+          },
+          select: { id_user: true }
+        }).catch(() => []);
+        const gradeSaved = new Set((grades || []).map(g => Number(g.id_user)).filter(Number.isFinite));
+
+        // Acta vinculada en app_settings
+        await prisma.$executeRawUnsafe(
+          'CREATE TABLE IF NOT EXISTS app_settings (\n' +
+          '  setting_key VARCHAR(100) NOT NULL PRIMARY KEY,\n' +
+          '  setting_value TEXT NOT NULL\n' +
+          ')'
+        );
+        const setRows = await prisma.$queryRawUnsafe(
+          'SELECT setting_key FROM app_settings WHERE setting_key LIKE ?',
+          `complexivo_acta_for_${Number(id_ap)}_%`
+        ).catch(() => []);
+        const actaLinked = new Set();
+        for (const r of (Array.isArray(setRows) ? setRows : [])) {
+          const key = String(r?.setting_key || '');
+          const m = key.match(/^complexivo_acta_for_(\d+)_(\d+)$/);
+          if (!m) continue;
+          const studentId = Number(m[2]);
+          if (Number.isFinite(studentId)) actaLinked.add(studentId);
         }
-      }).catch(() => 0)
-      : 0;
+
+        for (const id of estIds) {
+          const pending = !gradeSaved.has(Number(id)) || !actaLinked.has(Number(id));
+          if (pending) actasPendientesComplexivo += 1;
+        }
+      }
+    }
 
     const actasPendientes = Number(actasPendientesUic || 0) + Number(actasPendientesComplexivo || 0);
 

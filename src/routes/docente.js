@@ -4,6 +4,7 @@ const prisma = require("../../prisma/client");
 const authorize = require("../middlewares/authorize");
 const fs = require('fs');
 const path = require('path');
+const vouchersService = require('../services/vouchersService');
 
 function getEffectiveDocenteId(req) {
   const me = req.user?.sub;
@@ -355,8 +356,21 @@ router.get("/uic/estudiantes", authorize('Docente','Administrador','Coordinador'
       where: { usuario_id: { in: estIds } },
       select: { usuario_id: true, nombre: true, apellido: true }
     });
+
+    let careerMap = new Map();
+    try {
+      careerMap = await vouchersService.getCareerMapForUserIds(estIds);
+    } catch (_) {
+      careerMap = new Map();
+    }
+
     const data = usuarios
-      .map(u => ({ id: String(u.usuario_id), nombre: `${u.nombre} ${u.apellido}`.trim() }))
+      .map(u => ({
+        id: String(u.usuario_id),
+        nombre: `${u.nombre} ${u.apellido}`.trim(),
+        carrera: careerMap.get(Number(u.usuario_id)) || null,
+        career_name: careerMap.get(Number(u.usuario_id)) || null,
+      }))
       .sort((a,b)=> a.nombre.localeCompare(b.nombre));
     res.json(data);
   } catch (err) { next(err); }
