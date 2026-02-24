@@ -90,8 +90,12 @@ module.exports.generarCertNotas = generarCertNotas;
 
 async function listPromedios(req, res, next) {
   try {
-    const schema = z.object({ page: z.coerce.number().int().positive().optional(), pageSize: z.coerce.number().int().positive().optional() });
-    const { page = 1, pageSize = 20 } = schema.parse(req.query || {});
+    const schema = z.object({
+      page: z.coerce.number().int().positive().optional(),
+      pageSize: z.coerce.number().int().positive().optional(),
+      careerId: z.coerce.number().int().optional(),
+    });
+    const { page = 1, pageSize = 20, careerId } = schema.parse(req.query || {});
     const offset = (Math.max(1, Number(page)) - 1) * Math.max(1, Number(pageSize));
     const limit = Math.max(1, Number(pageSize));
 
@@ -118,8 +122,26 @@ async function listPromedios(req, res, next) {
     }
     if (!Number.isFinite(Number(id_ext_periodo))) return res.json({ data: [], pagination: { page: Number(page), pageSize: limit } });
 
+    const cid = Number(careerId);
+    const careerFilterId = Number.isFinite(cid) && cid > 0 ? cid : null;
+
+    const total = await viewsDao.getNotasResumenAprobadosCountByPeriodo({
+      external_period_id: Number(id_ext_periodo),
+      carrera_id: careerFilterId,
+    });
+    const totalPages = Math.max(1, Math.ceil((Number(total) || 0) / limit));
+
+    const careers = await viewsDao.listNotasResumenAprobadosCarrerasByPeriodo({
+      external_period_id: Number(id_ext_periodo),
+    });
+
     // Estudiantes con TODO aprobado (según regla por carrera) en el período mapeado
-    const base = await viewsDao.getNotasResumenAprobadosByPeriodo({ external_period_id: Number(id_ext_periodo), offset, limit });
+    const base = await viewsDao.getNotasResumenAprobadosByPeriodo({
+      external_period_id: Number(id_ext_periodo),
+      offset,
+      limit,
+      carrera_id: careerFilterId,
+    });
     const idsPage = (base || []).map(r => Number(r.estudiante_id)).filter(Number.isFinite);
     if (!idsPage.length) return res.json({ data: [], pagination: { page: Number(page), pageSize: limit } });
 
@@ -149,6 +171,7 @@ async function listPromedios(req, res, next) {
       estudiante_id: Number(r.estudiante_id),
       nombre: String(r.nombre || '').trim(),
       carrera: String(r.carrera || '').trim(),
+      carrera_id: Number(r.carrera_id),
       s1: toNumOrNull(r.s1),
       s2: toNumOrNull(r.s2),
       s3: toNumOrNull(r.s3),
@@ -159,7 +182,14 @@ async function listPromedios(req, res, next) {
       certificado_doc_id: (secMap.get(Number(r.estudiante_id))?.certificado_doc_id) ?? null,
     }));
 
-    res.json({ data: rows, pagination: { page: Number(page), pageSize: limit } });
+    res.json({
+      data: rows,
+      careers: (careers || []).map(c => ({
+        id: Number(c.carrera_id),
+        nombre: String(c.carrera || '').trim(),
+      })).filter(c => Number.isFinite(c.id) && c.id > 0 && c.nombre),
+      pagination: { page: Number(page), pageSize: limit, total: Number(total) || 0, totalPages },
+    });
   } catch (err) { if (err.name === 'ZodError') { err.status = 400; err.message = err.errors.map(e => e.message).join(', '); } next(err); }
 }
 

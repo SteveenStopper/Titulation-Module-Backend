@@ -127,158 +127,119 @@ async function getPeriodoRangoSemestresByStudent({ estudiante_id, external_perio
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
 
-async function getNotasResumenAprobadosByPeriodo({ external_period_id, offset = 0, limit = 20 }) {
+async function getNotasResumenAprobadosByPeriodo({ external_period_id, offset = 0, limit = 20, carrera_id = null }) {
+  const cid = carrera_id !== undefined && carrera_id !== null && carrera_id !== '' ? Number(carrera_id) : null;
+  const hasCareer = Number.isFinite(cid) && cid > 0;
   const sql = `
     SELECT
       u.ID_USUARIOS AS estudiante_id,
-      u.DOCUMENTO_USUARIOS AS cedula,
-      CONCAT(u.NOMBRES_USUARIOS,' ',u.APELLIDOS_USUARIOS) AS nombre,
-      c.NOMBRE_CARRERAS AS carrera,
-      c.ID_CARRERAS AS carrera_id,
-      semAgg.s1,
-      semAgg.s2,
-      semAgg.s3,
-      semAgg.s4,
-      semAgg.s5,
-      semAgg.promedio_general
-    FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me
-    JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
-      ON REPLACE(REPLACE(u.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(me.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
-    JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA mm
-      ON mm.ID_ESTUDIANTE_MATRICULA = me.ID_ESTUDIANTES
-     AND mm.ID_PERIODO_MATRICULA = ?
+      MIN(u.DOCUMENTO_USUARIOS) AS cedula,
+      MIN(TRIM(CONCAT(
+        e.APELLIDOS_1_ESTUDIANTES, ' ',
+        e.APELLIDOS_2_ESTUDIANTES, ' ',
+        e.NOMBRE_1_ESTUDIANTES, ' ',
+        COALESCE(e.NOMBRE_2_ESTUDIANTES,'')
+      ))) AS nombre,
+      car.NOMBRE_CARRERAS AS carrera,
+      car.ID_CARRERAS AS carrera_id,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 1 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s1,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 2 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s2,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 3 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s3,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 4 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s4,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s5,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS BETWEEN 1 AND 4 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS promedio_general
+    FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES e
+    JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA m
+      ON m.ID_ESTUDIANTE_MATRICULA = e.ID_ESTUDIANTES
     JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc
-      ON fc.ID_FORMAR_CURSOS = mm.ID_FORMAR_CURSOS_MATRICULA
-    JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS c
-      ON c.ID_CARRERAS = fc.ID_CARRERA_FORMAR_CURSOS
-    JOIN (
-      SELECT
-        t.estudiante_id,
-        MAX(CASE WHEN t.sem = 1 AND t.all_pass = 1 THEN t.avg_nota END) AS s1,
-        MAX(CASE WHEN t.sem = 2 AND t.all_pass = 1 THEN t.avg_nota END) AS s2,
-        MAX(CASE WHEN t.sem = 3 AND t.all_pass = 1 THEN t.avg_nota END) AS s3,
-        MAX(CASE WHEN t.sem = 4 AND t.all_pass = 1 THEN t.avg_nota END) AS s4,
-        MAX(CASE WHEN t.sem = 5 AND t.all_pass = 1 THEN t.avg_nota END) AS s5,
-        AVG(CASE WHEN t.all_pass = 1 AND t.sem <= 4 THEN t.avg_nota END) AS promedio_general
-      FROM (
-        SELECT
-          u3.ID_USUARIOS AS estudiante_id,
-          cu3.SECUENCIA_CURSOS AS sem,
-          AVG(n3.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS) AS avg_nota,
-          MIN(CASE WHEN n3.CONDICION_FINAL_NOTAS = 'APRUEBA' THEN 1 ELSE 0 END) AS all_pass
-        FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me3
-        JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u3
-          ON REPLACE(REPLACE(u3.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(me3.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
-        JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA mm3
-          ON mm3.ID_ESTUDIANTE_MATRICULA = me3.ID_ESTUDIANTES
-         AND mm3.ID_PERIODO_MATRICULA <= ?
-        JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc3
-          ON fc3.ID_FORMAR_CURSOS = mm3.ID_FORMAR_CURSOS_MATRICULA
-        JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS cu3
-          ON cu3.ID_CURSOS = fc3.ID_CURSOS_FORMAR_CURSOS
-        JOIN ${EXT_SCHEMA}.NOTAS_NOTAS n3
-          ON n3.ID_MATRICULA_NOTAS = mm3.ID_MATRICULA
-        WHERE cu3.SECUENCIA_CURSOS BETWEEN 1 AND 4
-        GROUP BY u3.ID_USUARIOS, cu3.SECUENCIA_CURSOS
-      ) t
-      GROUP BY t.estudiante_id
-    ) semAgg
-      ON semAgg.estudiante_id = u.ID_USUARIOS
-    WHERE (u.STATUS_USUARIOS='ACTIVO' OR u.STATUS_USUARIOS IS NULL)
-      AND (
-        (
-          c.NOMBRE_CARRERAS = 'TECNOLOGÍA EN EDUCACIÓN BÁSICA'
-          AND semAgg.s1 IS NOT NULL AND semAgg.s2 IS NOT NULL AND semAgg.s3 IS NOT NULL AND semAgg.s4 IS NOT NULL
-        )
-        OR
-        (
-          c.NOMBRE_CARRERAS <> 'TECNOLOGÍA EN EDUCACIÓN BÁSICA'
-          AND semAgg.s1 IS NOT NULL AND semAgg.s2 IS NOT NULL AND semAgg.s3 IS NOT NULL
-        )
+      ON fc.ID_FORMAR_CURSOS = m.ID_FORMAR_CURSOS_MATRICULA
+    JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS c
+      ON c.ID_CURSOS = fc.ID_CURSOS_FORMAR_CURSOS
+    JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS car
+      ON car.ID_CARRERAS = fc.ID_CARRERA_FORMAR_CURSOS
+    JOIN ${EXT_SCHEMA}.NOTAS_NOTAS n
+      ON n.ID_MATRICULA_NOTAS = m.ID_MATRICULA
+    JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
+      ON REPLACE(REPLACE(u.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(e.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
+    WHERE m.ID_PERIODO_MATRICULA <= ?
+      AND e.ID_ESTUDIANTES IN (
+        SELECT DISTINCT ID_ESTUDIANTE_MATRICULA
+        FROM ${EXT_SCHEMA}.MATRICULACION_MATRICULA
+        WHERE ID_PERIODO_MATRICULA = ?
       )
-    GROUP BY u.ID_USUARIOS
-    ORDER BY nombre ASC
+      ${hasCareer ? 'AND car.ID_CARRERAS = ?' : ''}
+    GROUP BY u.ID_USUARIOS, e.ID_ESTUDIANTES, car.ID_CARRERAS, car.NOMBRE_CARRERAS
+    HAVING
+      s1 IS NOT NULL AND s1 >= 0
+      AND s2 IS NOT NULL AND s2 >= 0
+      AND s3 IS NOT NULL AND s3 >= 0
+      AND s4 IS NOT NULL AND s4 > 0
+      AND (
+        SUM(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN 1 ELSE 0 END) = 0
+        OR s5 IS NOT NULL
+      )
+    ORDER BY carrera ASC, nombre ASC
     LIMIT ?, ?
   `;
 
-  return prisma.$queryRawUnsafe(
-    sql,
+  const params = [
     Number(external_period_id),
     Number(external_period_id),
-    Number(offset),
-    Number(limit)
-  );
+  ];
+  if (hasCareer) params.push(cid);
+  params.push(Number(offset), Number(limit));
+
+  return prisma.$queryRawUnsafe(sql, ...params);
 }
 
 async function getNotasResumenAprobadosByPeriodoById({ external_period_id, estudiante_id }) {
   const sql = `
     SELECT
       u.ID_USUARIOS AS estudiante_id,
-      u.DOCUMENTO_USUARIOS AS cedula,
-      CONCAT(u.NOMBRES_USUARIOS,' ',u.APELLIDOS_USUARIOS) AS nombre,
-      c.NOMBRE_CARRERAS AS carrera,
-      c.ID_CARRERAS AS carrera_id,
-      semAgg.s1,
-      semAgg.s2,
-      semAgg.s3,
-      semAgg.s4,
-      semAgg.s5,
-      semAgg.promedio_general
-    FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me
-    JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
-      ON REPLACE(REPLACE(u.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(me.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
-    JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA mm
-      ON mm.ID_ESTUDIANTE_MATRICULA = me.ID_ESTUDIANTES
-     AND mm.ID_PERIODO_MATRICULA = ?
+      MIN(u.DOCUMENTO_USUARIOS) AS cedula,
+      MIN(TRIM(CONCAT(
+        e.APELLIDOS_1_ESTUDIANTES, ' ',
+        e.APELLIDOS_2_ESTUDIANTES, ' ',
+        e.NOMBRE_1_ESTUDIANTES, ' ',
+        COALESCE(e.NOMBRE_2_ESTUDIANTES,'')
+      ))) AS nombre,
+      car.NOMBRE_CARRERAS AS carrera,
+      car.ID_CARRERAS AS carrera_id,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 1 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s1,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 2 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s2,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 3 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s3,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 4 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s4,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s5,
+      ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS BETWEEN 1 AND 4 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS promedio_general
+    FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES e
+    JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA m
+      ON m.ID_ESTUDIANTE_MATRICULA = e.ID_ESTUDIANTES
     JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc
-      ON fc.ID_FORMAR_CURSOS = mm.ID_FORMAR_CURSOS_MATRICULA
-    JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS c
-      ON c.ID_CARRERAS = fc.ID_CARRERA_FORMAR_CURSOS
-    JOIN (
-      SELECT
-        t.estudiante_id,
-        MAX(CASE WHEN t.sem = 1 AND t.all_pass = 1 THEN t.avg_nota END) AS s1,
-        MAX(CASE WHEN t.sem = 2 AND t.all_pass = 1 THEN t.avg_nota END) AS s2,
-        MAX(CASE WHEN t.sem = 3 AND t.all_pass = 1 THEN t.avg_nota END) AS s3,
-        MAX(CASE WHEN t.sem = 4 AND t.all_pass = 1 THEN t.avg_nota END) AS s4,
-        MAX(CASE WHEN t.sem = 5 AND t.all_pass = 1 THEN t.avg_nota END) AS s5,
-        AVG(CASE WHEN t.all_pass = 1 AND t.sem <= 4 THEN t.avg_nota END) AS promedio_general
-      FROM (
-        SELECT
-          u3.ID_USUARIOS AS estudiante_id,
-          cu3.SECUENCIA_CURSOS AS sem,
-          AVG(n3.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS) AS avg_nota,
-          MIN(CASE WHEN n3.CONDICION_FINAL_NOTAS = 'APRUEBA' THEN 1 ELSE 0 END) AS all_pass
-        FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES me3
-        JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u3
-          ON REPLACE(REPLACE(u3.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(me3.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
-        JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA mm3
-          ON mm3.ID_ESTUDIANTE_MATRICULA = me3.ID_ESTUDIANTES
-         AND mm3.ID_PERIODO_MATRICULA <= ?
-        JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc3
-          ON fc3.ID_FORMAR_CURSOS = mm3.ID_FORMAR_CURSOS_MATRICULA
-        JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS cu3
-          ON cu3.ID_CURSOS = fc3.ID_CURSOS_FORMAR_CURSOS
-        JOIN ${EXT_SCHEMA}.NOTAS_NOTAS n3
-          ON n3.ID_MATRICULA_NOTAS = mm3.ID_MATRICULA
-        WHERE cu3.SECUENCIA_CURSOS BETWEEN 1 AND 4
-          AND u3.ID_USUARIOS = ?
-        GROUP BY u3.ID_USUARIOS, cu3.SECUENCIA_CURSOS
-      ) t
-      GROUP BY t.estudiante_id
-    ) semAgg
-      ON semAgg.estudiante_id = u.ID_USUARIOS
-    WHERE u.ID_USUARIOS = ?
+      ON fc.ID_FORMAR_CURSOS = m.ID_FORMAR_CURSOS_MATRICULA
+    JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS c
+      ON c.ID_CURSOS = fc.ID_CURSOS_FORMAR_CURSOS
+    JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS car
+      ON car.ID_CARRERAS = fc.ID_CARRERA_FORMAR_CURSOS
+    JOIN ${EXT_SCHEMA}.NOTAS_NOTAS n
+      ON n.ID_MATRICULA_NOTAS = m.ID_MATRICULA
+    JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
+      ON REPLACE(REPLACE(u.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(e.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
+    WHERE m.ID_PERIODO_MATRICULA <= ?
+      AND u.ID_USUARIOS = ?
+      AND e.ID_ESTUDIANTES IN (
+        SELECT DISTINCT ID_ESTUDIANTE_MATRICULA
+        FROM ${EXT_SCHEMA}.MATRICULACION_MATRICULA
+        WHERE ID_PERIODO_MATRICULA = ?
+      )
+    GROUP BY u.ID_USUARIOS, e.ID_ESTUDIANTES, car.ID_CARRERAS, car.NOMBRE_CARRERAS
+    HAVING
+      s1 IS NOT NULL AND s1 >= 0
+      AND s2 IS NOT NULL AND s2 >= 0
+      AND s3 IS NOT NULL AND s3 >= 0
+      AND s4 IS NOT NULL AND s4 > 0
       AND (
-        (
-          c.NOMBRE_CARRERAS = 'TECNOLOGÍA EN EDUCACIÓN BÁSICA'
-          AND semAgg.s1 IS NOT NULL AND semAgg.s2 IS NOT NULL AND semAgg.s3 IS NOT NULL AND semAgg.s4 IS NOT NULL
-        )
-        OR
-        (
-          c.NOMBRE_CARRERAS <> 'TECNOLOGÍA EN EDUCACIÓN BÁSICA'
-          AND semAgg.s1 IS NOT NULL AND semAgg.s2 IS NOT NULL AND semAgg.s3 IS NOT NULL
-        )
+        SUM(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN 1 ELSE 0 END) = 0
+        OR s5 IS NOT NULL
       )
     LIMIT 1
   `;
@@ -286,11 +247,110 @@ async function getNotasResumenAprobadosByPeriodoById({ external_period_id, estud
   const rows = await prisma.$queryRawUnsafe(
     sql,
     Number(external_period_id),
-    Number(external_period_id),
     Number(estudiante_id),
-    Number(estudiante_id)
+    Number(external_period_id)
   );
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+async function getNotasResumenAprobadosCountByPeriodo({ external_period_id, carrera_id = null }) {
+  const cid = carrera_id !== undefined && carrera_id !== null && carrera_id !== '' ? Number(carrera_id) : null;
+  const hasCareer = Number.isFinite(cid) && cid > 0;
+  const sql = `
+    SELECT COUNT(*) AS total
+    FROM (
+      SELECT
+        u.ID_USUARIOS AS estudiante_id
+      FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES e
+      JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA m
+        ON m.ID_ESTUDIANTE_MATRICULA = e.ID_ESTUDIANTES
+      JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc
+        ON fc.ID_FORMAR_CURSOS = m.ID_FORMAR_CURSOS_MATRICULA
+      JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS c
+        ON c.ID_CURSOS = fc.ID_CURSOS_FORMAR_CURSOS
+      JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS car
+        ON car.ID_CARRERAS = fc.ID_CARRERA_FORMAR_CURSOS
+      JOIN ${EXT_SCHEMA}.NOTAS_NOTAS n
+        ON n.ID_MATRICULA_NOTAS = m.ID_MATRICULA
+      JOIN ${EXT_SCHEMA}.SEGURIDAD_USUARIOS u
+        ON REPLACE(REPLACE(u.DOCUMENTO_USUARIOS,'-',''),' ','') = REPLACE(REPLACE(e.DOCUMENTO_ESTUDIANTES,'-',''),' ','')
+      WHERE m.ID_PERIODO_MATRICULA <= ?
+        AND e.ID_ESTUDIANTES IN (
+          SELECT DISTINCT ID_ESTUDIANTE_MATRICULA
+          FROM ${EXT_SCHEMA}.MATRICULACION_MATRICULA
+          WHERE ID_PERIODO_MATRICULA = ?
+        )
+        ${hasCareer ? 'AND car.ID_CARRERAS = ?' : ''}
+      GROUP BY u.ID_USUARIOS, e.ID_ESTUDIANTES, car.ID_CARRERAS, car.NOMBRE_CARRERAS
+      HAVING
+        ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 1 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) IS NOT NULL
+        AND ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 1 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) >= 0
+        AND ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 2 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) IS NOT NULL
+        AND ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 2 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) >= 0
+        AND ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 3 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) IS NOT NULL
+        AND ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 3 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) >= 0
+        AND ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 4 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) IS NOT NULL
+        AND ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 4 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) > 0
+        AND (
+          SUM(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN 1 ELSE 0 END) = 0
+          OR ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) IS NOT NULL
+        )
+    ) t
+  `;
+
+  const params = [Number(external_period_id), Number(external_period_id)];
+  if (hasCareer) params.push(cid);
+  const rows = await prisma.$queryRawUnsafe(sql, ...params);
+  const total = Array.isArray(rows) && rows[0] ? Number(rows[0].total || 0) : 0;
+  return Number.isFinite(total) ? total : 0;
+}
+
+async function listNotasResumenAprobadosCarrerasByPeriodo({ external_period_id }) {
+  const sql = `
+    SELECT DISTINCT
+      t.carrera_id,
+      t.carrera
+    FROM (
+      SELECT
+        car.ID_CARRERAS AS carrera_id,
+        car.NOMBRE_CARRERAS AS carrera,
+        ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 1 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s1,
+        ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 2 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s2,
+        ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 3 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s3,
+        ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 4 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s4,
+        ROUND(AVG(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN n.NOTA_FINAL_SUMA_NOTA_FINAL_DIVIDE_2_NOTAS END), 2) AS s5
+      FROM ${EXT_SCHEMA}.MATRICULACION_ESTUDIANTES e
+      JOIN ${EXT_SCHEMA}.MATRICULACION_MATRICULA m
+        ON m.ID_ESTUDIANTE_MATRICULA = e.ID_ESTUDIANTES
+      JOIN ${EXT_SCHEMA}.MATRICULACION_FORMAR_CURSOS fc
+        ON fc.ID_FORMAR_CURSOS = m.ID_FORMAR_CURSOS_MATRICULA
+      JOIN ${EXT_SCHEMA}.MATRICULACION_CURSOS c
+        ON c.ID_CURSOS = fc.ID_CURSOS_FORMAR_CURSOS
+      JOIN ${EXT_SCHEMA}.MATRICULACION_CARRERAS car
+        ON car.ID_CARRERAS = fc.ID_CARRERA_FORMAR_CURSOS
+      JOIN ${EXT_SCHEMA}.NOTAS_NOTAS n
+        ON n.ID_MATRICULA_NOTAS = m.ID_MATRICULA
+      WHERE m.ID_PERIODO_MATRICULA <= ?
+        AND e.ID_ESTUDIANTES IN (
+          SELECT DISTINCT ID_ESTUDIANTE_MATRICULA
+          FROM ${EXT_SCHEMA}.MATRICULACION_MATRICULA
+          WHERE ID_PERIODO_MATRICULA = ?
+        )
+      GROUP BY e.ID_ESTUDIANTES, car.ID_CARRERAS, car.NOMBRE_CARRERAS
+      HAVING
+        s1 IS NOT NULL AND s1 >= 0
+        AND s2 IS NOT NULL AND s2 >= 0
+        AND s3 IS NOT NULL AND s3 >= 0
+        AND s4 IS NOT NULL AND s4 > 0
+        AND (
+          SUM(CASE WHEN c.SECUENCIA_CURSOS = 5 THEN 1 ELSE 0 END) = 0
+          OR s5 IS NOT NULL
+        )
+    ) t
+    ORDER BY t.carrera ASC
+  `;
+  const rows = await prisma.$queryRawUnsafe(sql, Number(external_period_id), Number(external_period_id));
+  return Array.isArray(rows) ? rows : [];
 }
 
 async function getNotasResumenTitulacionByPeriodo({ external_period_id, offset = 0, limit = 20 }) {
@@ -510,6 +570,8 @@ module.exports = {
   getNotasEstudiante,
   getNotasResumenAprobadosByPeriodo,
   getNotasResumenAprobadosByPeriodoById,
+  getNotasResumenAprobadosCountByPeriodo,
+  listNotasResumenAprobadosCarrerasByPeriodo,
   getNotasResumenTitulacionByPeriodo,
   getNotasResumenTitulacionByPeriodoById,
   getPeriodoRangoSemestresByStudent,

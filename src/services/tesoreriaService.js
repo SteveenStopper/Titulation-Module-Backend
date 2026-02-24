@@ -113,12 +113,26 @@ async function listResumen({ page = 1, pageSize = 20, minSem = null, academicPer
     return { data: [], pagination: { page: _page, pageSize: _pageSize } };
   }
 
+  const cid = Number(careerId);
+  const careerFilterId = Number.isFinite(cid) && cid > 0 ? cid : null;
+
+  const total = await viewsDao.getNotasResumenAprobadosCountByPeriodo({
+    external_period_id: Number(externalPeriodId),
+    carrera_id: careerFilterId,
+  });
+  const totalPages = Math.max(1, Math.ceil((Number(total) || 0) / _pageSize));
+
+  const careers = await viewsDao.listNotasResumenAprobadosCarrerasByPeriodo({
+    external_period_id: Number(externalPeriodId),
+  });
+
   // Lista base: SOLO estudiantes aprobados (misma regla que Secretaría) con paginación SQL.
   // Evita páginas vacías cuando se pagina primero y se filtra después.
   let rows = await viewsDao.getNotasResumenAprobadosByPeriodo({
     external_period_id: Number(externalPeriodId),
     offset,
-    limit
+    limit,
+    carrera_id: careerFilterId,
   });
   rows = (rows || []).map(r => ({
     estudiante_id: Number(r.estudiante_id),
@@ -127,12 +141,6 @@ async function listResumen({ page = 1, pageSize = 20, minSem = null, academicPer
     carrera_id: Number(r.carrera_id),
     carrera_nombre: r.carrera,
   }));
-
-  // Filtro por carrera (best-effort; puede afectar paginación)
-  const cid = Number(careerId);
-  if (Number.isFinite(cid) && cid > 0) {
-    rows = (rows || []).filter(r => Number(r.carrera_id) === cid);
-  }
 
   // Adjuntar estado de validación (persistente) desde la BD local
   const ids = (rows || []).map(r => Number(r.estudiante_id)).filter(Number.isFinite);
@@ -170,7 +178,14 @@ async function listResumen({ page = 1, pageSize = 20, minSem = null, academicPer
     rows = checked.filter(Boolean);
   }
 
-  return { data: rows, pagination: { page: _page, pageSize: _pageSize } };
+  return {
+    data: rows,
+    careers: (careers || []).map(c => ({
+      id: Number(c.carrera_id),
+      nombre: String(c.carrera || '').trim(),
+    })).filter(c => Number.isFinite(c.id) && c.id > 0 && c.nombre),
+    pagination: { page: _page, pageSize: _pageSize, total: Number(total) || 0, totalPages },
+  };
 }
 
 async function listApprovedStudentsForPeriod({ academicPeriodId, careerId } = {}) {
