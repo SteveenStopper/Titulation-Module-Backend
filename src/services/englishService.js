@@ -13,6 +13,22 @@ async function getActivePeriodId() {
   }
 }
 
+async function getPeriodDateRange(academicPeriodId) {
+  const id = Number(academicPeriodId);
+  if (!Number.isFinite(id)) return null;
+  try {
+    const per = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { fecha_inicio: true, fecha_fin: true } });
+    if (!per?.fecha_inicio || !per?.fecha_fin) return null;
+    const start = new Date(per.fecha_inicio);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(per.fecha_fin);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function getMy({ id_user, academicPeriodId }) {
   const id_ap = academicPeriodId ?? (await getActivePeriodId());
   if (!id_ap) return null;
@@ -44,12 +60,25 @@ async function validate({ id, validatorId }) {
 async function listEligible({ academicPeriodId }) {
   const id_ap = academicPeriodId ?? (await getActivePeriodId());
   if (!id_ap) return [];
-  // Estudiantes con Tesorería aprobada en el período
-  const pv = await prisma.procesos_validaciones.findMany({
-    where: { proceso: 'tesoreria_aranceles', periodo_id: id_ap, estado: 'approved' },
-    select: { estudiante_id: true }
-  });
-  const ids = Array.from(new Set(pv.map(p => p.estudiante_id))).filter(x => Number.isFinite(Number(x)));
+
+  const range = await getPeriodDateRange(id_ap);
+  const listPaidIds = async (useRange) => {
+    const paid = await prisma.documentos.findMany({
+      where: {
+        tipo: 'comprobante_certificados',
+        estado: 'aprobado',
+        ...(useRange && range?.start && range?.end ? { creado_en: { gte: range.start, lte: range.end } } : {}),
+      },
+      select: { usuario_id: true },
+      distinct: ['usuario_id'],
+    }).catch(() => []);
+    return Array.from(new Set((paid || []).map(r => r.usuario_id))).filter(x => Number.isFinite(Number(x)));
+  };
+
+  // Primero intentar por rango del período activo. Si no hay resultados (p.ej. período mal configurado),
+  // hacer fallback a cualquier pago aprobado de certificado para no bloquear los módulos.
+  let ids = await listPaidIds(true);
+  if (!ids.length) ids = await listPaidIds(false);
   if (!ids.length) return [];
   const users = await prisma.usuarios.findMany({
     where: { usuario_id: { in: ids } },

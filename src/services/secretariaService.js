@@ -138,19 +138,26 @@ async function generateNotasCertificate({ studentId, academicPeriodId, issuerId 
     const x = doc.page.margins.left;
     const col1 = 155;
     const col2 = pageWidth - col1;
-    const rowH = 20;
-    const startY = doc.y;
-
+    const minRowH = 20;
+    const padY = 6;
     const drawRow = (y, label, value) => {
+      doc.font('Helvetica-Bold').fontSize(10);
+      const labelH = doc.heightOfString(String(label || ''), { width: col1 - 12 });
+      doc.font('Helvetica').fontSize(10);
+      const valueH = doc.heightOfString(String(value || ''), { width: col2 - 12 });
+      const rowH = Math.max(minRowH, Math.ceil(Math.max(labelH, valueH) + padY * 2));
       doc.rect(x, y, col1, rowH).stroke();
       doc.rect(x + col1, y, col2, rowH).stroke();
-      doc.font('Helvetica-Bold').fontSize(10).text(label, x + 6, y + 6, { width: col1 - 12 });
-      doc.font('Helvetica').fontSize(10).text(value, x + col1 + 6, y + 6, { width: col2 - 12 });
+      doc.font('Helvetica-Bold').fontSize(10).text(label, x + 6, y + padY, { width: col1 - 12 });
+      doc.font('Helvetica').fontSize(10).text(value, x + col1 + 6, y + padY, { width: col2 - 12 });
+      return rowH;
     };
 
-    drawRow(startY, 'CARRERA:', carrera || '');
-    drawRow(startY + rowH, 'PERIODO ACADÉMICO:', periodoAcademicoLabel);
-    drawRow(startY + rowH * 2, 'PROMEDIO GENERAL:', promedioGeneral !== null ? promedioGeneral.toFixed(2) : '');
+    let y = doc.y;
+    y += drawRow(y, 'CARRERA:', carrera || '');
+    y += drawRow(y, 'PERIODO ACADÉMICO:', periodoAcademicoLabel);
+    y += drawRow(y, 'PROMEDIO GENERAL:', promedioGeneral !== null ? promedioGeneral.toFixed(2) : '');
+    doc.y = y;
 
     // Ubicar firma centrada como la plantilla (zona media-baja)
     doc.y = Math.round(doc.page.height * 0.54);

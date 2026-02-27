@@ -19,6 +19,22 @@ async function getActiveAcademicPeriodId(override) {
   }
 }
 
+async function getPeriodDateRange(academicPeriodId) {
+  const id = Number(academicPeriodId);
+  if (!Number.isFinite(id)) return null;
+  try {
+    const per = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { fecha_inicio: true, fecha_fin: true } });
+    if (!per?.fecha_inicio || !per?.fecha_fin) return null;
+    const start = new Date(per.fecha_inicio);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(per.fecha_fin);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function listEligible(req, res, next) {
   try {
     const schema = z.object({ academicPeriodId: z.coerce.number().int().optional() });
@@ -121,19 +137,26 @@ async function certificate(req, res, next) {
       const x = doc.page.margins.left;
       const col1 = 155;
       const col2 = pageWidth - col1;
-      const rowH = 20;
-      const startY = doc.y;
-
+      const minRowH = 20;
+      const padY = 6;
       const drawRow = (y, label, value) => {
+        doc.font('Helvetica-Bold').fontSize(10);
+        const labelH = doc.heightOfString(String(label || ''), { width: col1 - 12 });
+        doc.font('Helvetica').fontSize(10);
+        const valueH = doc.heightOfString(String(value || ''), { width: col2 - 12 });
+        const rowH = Math.max(minRowH, Math.ceil(Math.max(labelH, valueH) + padY * 2));
         doc.rect(x, y, col1, rowH).stroke();
         doc.rect(x + col1, y, col2, rowH).stroke();
-        doc.font('Helvetica-Bold').fontSize(10).text(label, x + 6, y + 6, { width: col1 - 12 });
-        doc.font('Helvetica').fontSize(10).text(value, x + col1 + 6, y + 6, { width: col2 - 12 });
+        doc.font('Helvetica-Bold').fontSize(10).text(label, x + 6, y + padY, { width: col1 - 12 });
+        doc.font('Helvetica').fontSize(10).text(value, x + col1 + 6, y + padY, { width: col2 - 12 });
+        return rowH;
       };
 
-      drawRow(startY, 'CARRERA:', carrera || '');
-      drawRow(startY + rowH, 'PERIODO ACADÉMICO:', periodName || '');
-      drawRow(startY + rowH * 2, 'CALIFICACIÓN:', score != null ? String(score) : '');
+      let y = doc.y;
+      y += drawRow(y, 'CARRERA:', carrera || '');
+      y += drawRow(y, 'PERIODO ACADÉMICO:', periodName || '');
+      y += drawRow(y, 'CALIFICACIÓN:', score != null ? String(score) : '');
+      doc.y = y;
 
       doc.y = Math.round(doc.page.height * 0.62);
       const sigW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -185,15 +208,35 @@ async function dashboard(req, res, next) {
       });
     }
     const start = new Date(); start.setHours(0, 0, 0, 0);
+    const range = await getPeriodDateRange(id_ap);
 
-    const [elegibles, vSaved, vVal, pSaved, pVal, certHoy] = await Promise.all([
-      prisma.procesos_validaciones.count({ where: { proceso: 'tesoreria_aranceles', periodo_id: Number(id_ap), estado: 'approved' } }).catch(() => 0),
+    const listPaidIdsCount = async (useRange) => {
+      const rows = await prisma.documentos.findMany({
+        where: {
+          tipo: 'comprobante_certificados',
+          estado: 'aprobado',
+          ...(useRange && range?.start && range?.end ? { creado_en: { gte: range.start, lte: range.end } } : {}),
+        },
+        select: { usuario_id: true },
+        distinct: ['usuario_id'],
+      }).catch(() => []);
+      const ids = Array.from(new Set((rows || []).map(r => Number(r.usuario_id)).filter(Number.isFinite)));
+      return ids.length;
+    };
+
+    const [elegiblesInRange, vSaved, vVal, pSaved, pVal, certHoy] = await Promise.all([
+      listPaidIdsCount(true),
       prisma.academic_grades.count({ where: { module: 'vinculacion', id_academic_periods: Number(id_ap), status: 'saved' } }).catch(() => 0),
       prisma.academic_grades.count({ where: { module: 'vinculacion', id_academic_periods: Number(id_ap), status: 'validated' } }).catch(() => 0),
       prisma.academic_grades.count({ where: { module: 'practicas', id_academic_periods: Number(id_ap), status: 'saved' } }).catch(() => 0),
       prisma.academic_grades.count({ where: { module: 'practicas', id_academic_periods: Number(id_ap), status: 'validated' } }).catch(() => 0),
       prisma.documentos.count({ where: { tipo: { in: ['cert_vinculacion', 'cert_practicas'] }, creado_en: { gte: start } } }).catch(() => 0),
     ]);
+
+    let elegibles = Number(elegiblesInRange || 0);
+    if (!elegibles) {
+      try { elegibles = await listPaidIdsCount(false); } catch (_) { elegibles = 0; }
+    }
     res.json({
       elegibles: Number(elegibles || 0),
       vinculacionGuardadas: Number(vSaved || 0),

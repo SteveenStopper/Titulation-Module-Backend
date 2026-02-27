@@ -132,30 +132,43 @@ async function listDocuments(query) {
     }
   }
 
-  const [total, data] = await Promise.all([
-    prisma.documentos.count({ where }),
-    prisma.documentos.findMany({
-      where,
-      orderBy: { documento_id: "desc" },
-      skip,
-      take: pageSize,
-      select: {
-        documento_id: true,
-        tipo: true,
-        estado: true,
-        ruta_archivo: true,
-        nombre_archivo: true,
-        mime_type: true,
-        pago_referencia: true,
-        pago_monto: true,
-        observacion: true,
-        creado_en: true,
-        usuario_id: true,
-        estudiante_id: true,
-        usuarios: { select: { usuario_id: true, nombre: true, apellido: true } },
-      },
-    }),
-  ]);
+  const runQuery = async (w) => {
+    const [total, data] = await Promise.all([
+      prisma.documentos.count({ where: w }),
+      prisma.documentos.findMany({
+        where: w,
+        orderBy: { documento_id: "desc" },
+        skip,
+        take: pageSize,
+        select: {
+          documento_id: true,
+          tipo: true,
+          estado: true,
+          ruta_archivo: true,
+          nombre_archivo: true,
+          mime_type: true,
+          pago_referencia: true,
+          pago_monto: true,
+          observacion: true,
+          creado_en: true,
+          usuario_id: true,
+          estudiante_id: true,
+          usuarios: { select: { usuario_id: true, nombre: true, apellido: true } },
+        },
+      }),
+    ]);
+    return { total, data };
+  };
+
+  let { total, data } = await runQuery(where);
+
+  // Fallback: si el período activo está desfasado y el rango por fecha deja sin resultados,
+  // volver a listar sin el filtro de creado_en para no bloquear Matrícula/Secretaría.
+  if (where.creado_en && total === 0) {
+    const where2 = { ...where };
+    delete where2.creado_en;
+    ({ total, data } = await runQuery(where2));
+  }
 
   let careerMap = null;
   if (category === 'matricula_secretaria' || category === 'matricula') {

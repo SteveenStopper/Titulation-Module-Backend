@@ -8,22 +8,51 @@ async function getActivePeriodId() {
   return val?.id_academic_periods ?? null;
 }
 
+async function getPeriodDateRange(academicPeriodId) {
+  const id = Number(academicPeriodId);
+  if (!Number.isFinite(id)) return null;
+  try {
+    const per = await prisma.periodos.findUnique({ where: { periodo_id: id }, select: { fecha_inicio: true, fecha_fin: true } });
+    if (!per?.fecha_inicio || !per?.fecha_fin) return null;
+    const start = new Date(per.fecha_inicio);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(per.fecha_fin);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function listEligible({ academicPeriodId }) {
   const id_ap = academicPeriodId ?? (await getActivePeriodId());
   if (!id_ap) return [];
-  const pv = await prisma.procesos_validaciones.findMany({
-    where: { proceso: 'tesoreria_aranceles', periodo_id: id_ap, estado: 'approved' },
-    select: { estudiante_id: true }
-  });
-  const ids = Array.from(new Set(pv.map(p => p.estudiante_id))).filter(x => Number.isFinite(Number(x)));
-  if (!ids.length) return [];
+
+  const range = await getPeriodDateRange(id_ap);
+  const listPaidIds = async (useRange) => {
+    const paid = await prisma.documentos.findMany({
+      where: {
+        tipo: 'comprobante_certificados',
+        estado: 'aprobado',
+        ...(useRange && range?.start && range?.end ? { creado_en: { gte: range.start, lte: range.end } } : {}),
+      },
+      select: { usuario_id: true },
+      distinct: ['usuario_id'],
+    }).catch(() => []);
+    return Array.from(new Set((paid || []).map(r => r.usuario_id))).filter(x => Number.isFinite(Number(x)));
+  };
+
+  let ids = await listPaidIds(true);
+  if (!ids.length) ids = await listPaidIds(false);
+  const idsNum = Array.from(new Set((ids || []).map(n => Number(n)).filter(Number.isFinite)));
+  if (!idsNum.length) return [];
   const users = await prisma.usuarios.findMany({
-    where: { usuario_id: { in: ids } },
+    where: { usuario_id: { in: idsNum } },
     select: { usuario_id: true, nombre: true, apellido: true }
   });
-  const careerMap = await vouchersService.getCareerMapForUserIds(ids);
+  const careerMap = await vouchersService.getCareerMapForUserIds(idsNum);
   const certRows = await prisma.documentos.findMany({
-    where: { tipo: 'cert_practicas', estudiante_id: { in: ids.map(Number) } },
+    where: { tipo: 'cert_practicas', estudiante_id: { in: idsNum.map(Number) } },
     orderBy: { documento_id: 'desc' },
     select: { documento_id: true, estudiante_id: true, ruta_archivo: true }
   }).catch(() => []);
@@ -35,7 +64,7 @@ async function listEligible({ academicPeriodId }) {
     certMap.set(sid, { documento_id: Number(r.documento_id), url: rel ? `/uploads/${rel.replace(/^uploads\//, '')}` : null });
   }
   const grades = await prisma.academic_grades.findMany({
-    where: { module: 'practicas', id_user: { in: ids }, id_academic_periods: id_ap },
+    where: { module: 'practicas', id_user: { in: idsNum }, id_academic_periods: id_ap },
     select: { grade_id: true, id_user: true, score: true, status: true }
   });
   const gmap = new Map(grades.map(g => [g.id_user, { id: g.grade_id, score: g.score, status: g.status }]));

@@ -192,14 +192,11 @@ async function listVouchers(query) {
     ],
   };
 
-  // Period-scoping by date range (same reason as documentsService: documentos table has no periodo_id)
-  if (!where.creado_en) {
-    const apId = Number.isFinite(Number(overrideAp)) ? Number(overrideAp) : await getActiveAcademicPeriodId();
-    if (Number.isFinite(Number(apId))) {
-      const range = await getPeriodDateRange(apId);
-      if (range?.start && range?.end) {
-        where.creado_en = { gte: range.start, lte: range.end };
-      }
+  // Filtrar por período SOLO si el cliente lo pide explícitamente.
+  if (Number.isFinite(Number(overrideAp))) {
+    const range = await getPeriodDateRange(Number(overrideAp));
+    if (range?.start && range?.end) {
+      where.creado_en = { gte: range.start, lte: range.end };
     }
   }
 

@@ -7,6 +7,7 @@ const helmet = require('helmet');
 const errorHandler = require('./middlewares/errorHandler');
 const corsMiddleware = require('./middlewares/cors');
 const requestLogger = require('./middlewares/requestLogger');
+const { swaggerUi, swaggerSpec } = require('./swagger');
 
 const app = express();
 

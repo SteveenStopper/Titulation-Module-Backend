@@ -2,6 +2,7 @@ const { z } = require("zod");
 const prisma = require("../../prisma/client");
 const secretariaService = require("../services/secretariaService");
 const viewsDao = require("../daos/viewsDao");
+const vouchersService = require("../services/vouchersService");
 let settingsService;
 try {
   settingsService = require("../services/settingsService");
@@ -451,17 +452,41 @@ async function listActas(req, res, next) {
     const docs = docIds.length ? await prisma.usuarios.findMany({ where: { usuario_id: { in: docIds } }, select: { usuario_id: true, nombre: true, apellido: true } }) : [];
     const docName = new Map(docs.map(d => [d.usuario_id, `${d.nombre} ${d.apellido}`.trim()]));
 
+    const toTitleCase = (s) => {
+      const text = String(s || '').trim();
+      if (!text) return '';
+      return text
+        .toLowerCase()
+        .split(/\s+/)
+        .map(w => (w ? (w[0].toUpperCase() + w.slice(1)) : ''))
+        .join(' ');
+    };
+
     // Map carrera desde esquema externo
     let careerNameMap = {};
     try {
-      const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
-      const carIds = Array.from(new Set(asigns.map(a => a.carrera_id)));
+      const safeSchemaName = (schema) => {
+        const s = String(schema || '').trim();
+        return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+      };
+      const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
+      const carIds = Array.from(new Set(asigns.map(a => Number(a.carrera_id)).filter(Number.isFinite)));
       if (carIds.length) {
-        const inList = carIds.join(',');
-        const rows = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`);
+        const placeholders = carIds.map(() => '?').join(',');
+        const rows = await prisma.$queryRawUnsafe(
+          `SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${placeholders})`,
+          ...carIds
+        );
         if (Array.isArray(rows)) for (const r of rows) careerNameMap[Number(r.id)] = String(r.nombre);
       }
     } catch (_) { careerNameMap = {}; }
+
+    let careerMapByUser = null;
+    try {
+      careerMapByUser = await vouchersService.getCareerMapForUserIds(estIds);
+    } catch (_) {
+      careerMapByUser = null;
+    }
 
     // Necesitamos map asignacion_id para miembros; obtener ids
     const asigRows = await prisma.uic_asignaciones.findMany({
@@ -472,11 +497,17 @@ async function listActas(req, res, next) {
 
     const data = asigns.map(a => {
       const asigId = asigByEst.get(a.estudiante_id);
-      const miembros = tribMiembros.filter(m => m.uic_asignacion_id === asigId).map(m => docName.get(m.docente_usuario_id)).filter(Boolean);
+      const miembros = tribMiembros
+        .filter(m => m.uic_asignacion_id === asigId)
+        .map(m => toTitleCase(docName.get(m.docente_usuario_id)))
+        .filter(Boolean);
+      const carreraId = Number(a.carrera_id);
+      const carreraById = careerNameMap[Number.isFinite(carreraId) ? carreraId : NaN] || null;
+      const carreraByUser = careerMapByUser ? (careerMapByUser.get(Number(a.estudiante_id)) || null) : null;
       return {
         id: Number(a.estudiante_id),
         estudiante: nameMap.get(a.estudiante_id) || `Usuario ${a.estudiante_id}`,
-        carrera: careerNameMap[a.carrera_id] || null,
+        carrera: carreraById || carreraByUser,
         tribunal: miembros.join(', '),
         calificacionTribunal: a.nota_tribunal != null ? Number(a.nota_tribunal) : null,
         hojaCargada: Number.isFinite(Number(a.acta_doc_id)),
@@ -633,11 +664,18 @@ async function listActasComplexivo(req, res, next) {
     // Map carrera desde esquema externo
     let careerNameMap = {};
     try {
-      const EXT_SCHEMA = process.env.INSTITUTO_SCHEMA || 'tecnologicolosan_sigala2';
+      const safeSchemaName = (schema) => {
+        const s = String(schema || '').trim();
+        return /^[a-zA-Z0-9_]+$/.test(s) ? s : null;
+      };
+      const EXT_SCHEMA = safeSchemaName(process.env.INSTITUTO_SCHEMA) || 'tecnologicolosan_sigala2';
       const carIds = Array.from(new Set(mods.map(m => Number(m.carrera_id)).filter(Number.isFinite)));
       if (carIds.length) {
-        const inList = carIds.join(',');
-        const rows = await prisma.$queryRawUnsafe(`SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${inList})`);
+        const placeholders = carIds.map(() => '?').join(',');
+        const rows = await prisma.$queryRawUnsafe(
+          `SELECT ID_CARRERAS AS id, NOMBRE_CARRERAS AS nombre FROM ${EXT_SCHEMA}.MATRICULACION_CARRERAS WHERE ID_CARRERAS IN (${placeholders})`,
+          ...carIds
+        );
         if (Array.isArray(rows)) for (const r of rows) careerNameMap[Number(r.id)] = String(r.nombre);
       }
     } catch (_) { careerNameMap = {}; }

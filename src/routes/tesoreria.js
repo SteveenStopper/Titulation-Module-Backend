@@ -81,11 +81,14 @@ router.get("/dashboard", authorize('Tesoreria', 'Administrador'), async (req, re
     const range = apId ? await getPeriodDateRange(apId) : null;
     const periodWhere = (range?.start && range?.end) ? { gte: range.start, lte: range.end } : undefined;
 
+    // Si el período termina antes de hoy, no tiene sentido limitar por lte para métricas "de hoy".
+    const canLimitTodayByPeriodEnd = !!(periodWhere && periodWhere.lte && new Date(periodWhere.lte).getTime() >= start.getTime());
+
     const pagosHoy = await prisma.documentos.count({
       where: {
         tipo: { in: tipos },
         estado: 'aprobado',
-        ...(periodWhere ? { creado_en: { gte: start, lte: periodWhere.lte } } : { creado_en: { gte: start } })
+        creado_en: canLimitTodayByPeriodEnd ? { gte: start, lte: periodWhere.lte } : { gte: start }
       }
     });
 
@@ -110,9 +113,35 @@ router.get("/dashboard", authorize('Tesoreria', 'Administrador'), async (req, re
       }
     });
 
+    // Fallback: si el período activo está desfasado y todo sale 0, mostrar métricas globales
+    // para no bloquear la operación diaria.
+    let recaudadoOut = Number(recaudadoPeriodo || 0);
+    let pendientesOut = Number(vouchersPendientes || 0);
+    let pagosHoyOut = Number(pagosHoy || 0);
+    if (periodWhere && !recaudadoOut) {
+      const sumRows2 = await prisma.documentos.groupBy({
+        by: ['tipo'],
+        where: { tipo: { in: tipos }, estado: 'aprobado' },
+        _sum: { pago_monto: true }
+      }).catch(() => []);
+      recaudadoOut = (sumRows2 || []).reduce((acc, r) => acc + Number(r._sum?.pago_monto || 0), 0);
+    }
+    if (periodWhere && !recaudadoOut && !pendientesOut && !pagosHoyOut) {
+      const [sumRows2, pend2] = await Promise.all([
+        prisma.documentos.groupBy({
+          by: ['tipo'],
+          where: { tipo: { in: tipos }, estado: 'aprobado' },
+          _sum: { pago_monto: true }
+        }).catch(() => []),
+        prisma.documentos.count({ where: { tipo: { in: tipos }, estado: 'en_revision' } }).catch(() => 0),
+      ]);
+      recaudadoOut = (sumRows2 || []).reduce((acc, r) => acc + Number(r._sum?.pago_monto || 0), 0);
+      pendientesOut = Number(pend2 || 0);
+    }
+
     const deudasVencidas = 0;
     const arancelesActivos = 0;
-    res.json({ recaudadoPeriodo, vouchersPendientes, pagosHoy, deudasVencidas, arancelesActivos });
+    res.json({ recaudadoPeriodo: recaudadoOut, vouchersPendientes: pendientesOut, pagosHoy: pagosHoyOut, deudasVencidas, arancelesActivos });
   } catch (err) { next(err); }
 });
 

@@ -30,10 +30,10 @@ router.get("/dashboard", authorize('Vicerrector','Administrador'), async (req, r
       if (id_ap) {
         const distinct = await prisma.complexivo_materias.findMany({
           where: { periodo_id: Number(id_ap) },
-          select: { careerId: true },
-          distinct: ['careerId'],
+          select: { carrera_id: true },
+          distinct: ['carrera_id'],
         }).catch(() => []);
-        carrerasConMaterias = (distinct || []).map(r => Number(r.careerId)).filter(Number.isFinite).length;
+        carrerasConMaterias = (distinct || []).map(r => Number(r.carrera_id)).filter(Number.isFinite).length;
       }
     } catch (_) { carrerasConMaterias = 0; }
     const pendientesPublicar = Math.max(0, Number(carrerasActivas || 0) - Number(carrerasConMaterias || 0));

@@ -107,19 +107,26 @@ async function certificate(req, res, next) {
       const x = doc.page.margins.left;
       const col1 = 155;
       const col2 = pageWidth - col1;
-      const rowH = 20;
-      const startY = doc.y;
-
+      const minRowH = 20;
+      const padY = 6;
       const drawRow = (y, label, value) => {
+        doc.font('Helvetica-Bold').fontSize(10);
+        const labelH = doc.heightOfString(String(label || ''), { width: col1 - 12 });
+        doc.font('Helvetica').fontSize(10);
+        const valueH = doc.heightOfString(String(value || ''), { width: col2 - 12 });
+        const rowH = Math.max(minRowH, Math.ceil(Math.max(labelH, valueH) + padY * 2));
         doc.rect(x, y, col1, rowH).stroke();
         doc.rect(x + col1, y, col2, rowH).stroke();
-        doc.font('Helvetica-Bold').fontSize(10).text(label, x + 6, y + 6, { width: col1 - 12 });
-        doc.font('Helvetica').fontSize(10).text(value, x + col1 + 6, y + 6, { width: col2 - 12 });
+        doc.font('Helvetica-Bold').fontSize(10).text(label, x + 6, y + padY, { width: col1 - 12 });
+        doc.font('Helvetica').fontSize(10).text(value, x + col1 + 6, y + padY, { width: col2 - 12 });
+        return rowH;
       };
 
-      drawRow(startY, 'CARRERA:', carrera || '');
-      drawRow(startY + rowH, 'PERIODO ACADÉMICO:', periodName || '');
-      drawRow(startY + rowH * 2, 'CALIFICACIÓN:', score != null ? String(score) : '');
+      let y = doc.y;
+      y += drawRow(y, 'CARRERA:', carrera || '');
+      y += drawRow(y, 'PERIODO ACADÉMICO:', periodName || '');
+      y += drawRow(y, 'CALIFICACIÓN:', score != null ? String(score) : '');
+      doc.y = y;
 
       doc.y = Math.round(doc.page.height * 0.62);
       const sigW = doc.page.width - doc.page.margins.left - doc.page.margins.right;

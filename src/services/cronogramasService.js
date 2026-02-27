@@ -101,21 +101,11 @@ async function publicarUIC({ id_owner, academicPeriodId, title, period_label, pr
   }
   if (Array.isArray(items) && items.length) {
     for (const it of items) {
-      const dateStart = (() => {
-        if (!it?.date_start) return null;
-        const d = new Date(it.date_start);
-        return isNaN(d.getTime()) ? null : d;
-      })();
-      const dateEnd = (() => {
-        if (!it?.date_end) return null;
-        const d = new Date(it.date_end);
-        return isNaN(d.getTime()) ? null : d;
-      })();
       const row = {
         cronograma_id: cron.cronograma_id,
         titulo: String(it.activity_description || ''),
-        fecha_inicio: dateStart,
-        fecha_fin: dateEnd,
+        fecha_inicio: (() => { const d = it.date_start ? new Date(it.date_start) : new Date(); return isNaN(d.getTime()) ? new Date() : d; })(),
+        fecha_fin: (() => { const d = it.date_end ? new Date(it.date_end) : new Date(); return isNaN(d.getTime()) ? new Date() : d; })(),
         descripcion: String(it.responsible || ''),
       };
       await prisma.cronograma_items.create({ data: row });
