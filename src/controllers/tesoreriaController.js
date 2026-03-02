@@ -107,20 +107,25 @@ async function reportComprobantes(req, res, next) {
 
     const tipos = ['comprobante_certificados', 'comprobante_titulacion', 'comprobante_acta_grado'];
 
-    const docs = await prisma.documentos.findMany({
+    const baseWhere = {
+      usuario_id: { in: userIds },
+      tipo: { in: tipos },
+      AND: [
+        {
+          OR: [
+            { NOT: { pago_monto: null } },
+            { NOT: { pago_referencia: null } },
+            { ruta_archivo: { startsWith: 'uploads/vouchers' } },
+          ],
+        },
+      ],
+    };
+
+    // 1) Primer intento: dentro del rango del período
+    const docsInRange = await prisma.documentos.findMany({
       where: {
-        usuario_id: { in: userIds },
-        tipo: { in: tipos },
+        ...baseWhere,
         ...(start && end ? { creado_en: { gte: start, lte: end } } : {}),
-        AND: [
-          {
-            OR: [
-              { NOT: { pago_monto: null } },
-              { NOT: { pago_referencia: null } },
-              { ruta_archivo: { startsWith: 'uploads/vouchers' } },
-            ],
-          },
-        ],
       },
       orderBy: [{ usuario_id: 'asc' }, { tipo: 'asc' }, { creado_en: 'desc' }, { documento_id: 'desc' }],
       select: { usuario_id: true, tipo: true, estado: true, creado_en: true },
@@ -128,9 +133,34 @@ async function reportComprobantes(req, res, next) {
 
     // pick last doc per (user,tipo)
     const lastMap = new Map();
-    for (const d of (docs || [])) {
+    for (const d of (docsInRange || [])) {
       const key = `${Number(d.usuario_id)}|${String(d.tipo)}`;
       if (!lastMap.has(key)) lastMap.set(key, d);
+    }
+
+    // 2) Fallback: para los (user,tipo) que no aparecieron en rango, buscar el último global
+    const missingPairs = [];
+    for (const uid of userIds) {
+      for (const t of tipos) {
+        const key = `${Number(uid)}|${String(t)}`;
+        if (!lastMap.has(key)) missingPairs.push({ uid: Number(uid), tipo: String(t) });
+      }
+    }
+
+    if (missingPairs.length > 0) {
+      const missingUserIds = Array.from(new Set(missingPairs.map(x => Number(x.uid)).filter(Number.isFinite)));
+      const docsGlobal = await prisma.documentos.findMany({
+        where: {
+          ...baseWhere,
+          usuario_id: { in: missingUserIds },
+        },
+        orderBy: [{ usuario_id: 'asc' }, { tipo: 'asc' }, { creado_en: 'desc' }, { documento_id: 'desc' }],
+        select: { usuario_id: true, tipo: true, estado: true, creado_en: true },
+      }).catch(() => []);
+      for (const d of (docsGlobal || [])) {
+        const key = `${Number(d.usuario_id)}|${String(d.tipo)}`;
+        if (!lastMap.has(key)) lastMap.set(key, d);
+      }
     }
 
     const getStatus = (uid, tipo) => {

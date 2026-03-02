@@ -221,62 +221,124 @@ router.get('/admin/reportes/especifico', authorize('Coordinador','Administrador'
       return res.json(data);
     }
 
-    // UIC: estudiantes con tutor y tribunal asignados
-    const asigns = await prisma.uic_asignaciones.findMany({
+    // UIC: para el reporte específico, la fuente base debe ser modalidades_elegidas,
+    // porque en algunos entornos uic_topics no se llena correctamente y eso dejaba el reporte en 0.
+    // Tutor se toma desde uic_asignaciones (si existe) o como fallback desde uic_topics.
+
+    const modsUic = await prisma.modalidades_elegidas.findMany({
       where: {
         periodo_id: Number(id_ap),
-        tutor_usuario_id: { not: null },
+        modalidad: 'UIC',
+        ...(Number.isFinite(Number(careerId)) ? { carrera_id: Number(careerId) } : {}),
+      },
+      select: { estudiante_id: true, carrera_id: true }
+    }).catch(() => []);
+
+    const estIds = Array.from(new Set((modsUic || []).map(m => Number(m.estudiante_id)).filter(Number.isFinite)));
+    if (!estIds.length) return res.json([]);
+
+    const topics = await prisma.uic_topics.findMany({
+      where: {
+        id_academic_periods: Number(id_ap),
+        id_user: { in: estIds },
+      },
+      select: { id_user: true, career: true, id_tutor: true }
+    }).catch(() => []);
+
+    const uicAsignsAll = await prisma.uic_asignaciones.findMany({
+      where: {
+        periodo_id: Number(id_ap),
+        estudiante_id: { in: estIds },
         ...(Number.isFinite(Number(careerId)) ? { carrera_id: Number(careerId) } : {}),
       },
       select: { uic_asignacion_id: true, estudiante_id: true, carrera_id: true, tutor_usuario_id: true }
     }).catch(() => []);
-    if (!asigns.length) return res.json([]);
 
-    const asignIds = Array.from(new Set(asigns.map(a => Number(a.uic_asignacion_id)).filter(Number.isFinite)));
-    const miembros = asignIds.length
+    const asignByStudent = new Map((uicAsignsAll || []).map(a => [Number(a.estudiante_id), a]));
+    const studentByAsign = new Map((uicAsignsAll || []).map(a => [Number(a.uic_asignacion_id), Number(a.estudiante_id)]));
+    const asignIds = Array.from(new Set((uicAsignsAll || []).map(a => Number(a.uic_asignacion_id)).filter(Number.isFinite)));
+
+    // Fuente 1: miembros UIC por uic_asignacion
+    const miembros = asignIds.length > 0
       ? await prisma.uic_tribunal_miembros.findMany({
           where: { uic_asignacion_id: { in: asignIds } },
           select: { uic_asignacion_id: true, docente_usuario_id: true }
         }).catch(() => [])
       : [];
 
-    const miembrosByAsign = new Map();
+    // Fuente 2 (si existe): tribunal_assignments (utilizado por algunos flujos)
+    const hasTribunalAssignments = Boolean(prisma?.tribunal_assignments && typeof prisma.tribunal_assignments.findMany === 'function');
+    const assignments = hasTribunalAssignments
+      ? await prisma.tribunal_assignments.findMany({
+          where: { id_academic_periods: Number(id_ap), id_user_student: { in: estIds } },
+          select: { id_user_student: true, id_president: true, id_secretary: true, id_vocal: true }
+        }).catch(() => [])
+      : [];
+
+    // Unificar tribunal por estudiante
+    const tribunalByStudent = new Map(); // estudiante_id -> number[]
     for (const m of (miembros || [])) {
       const aid = Number(m.uic_asignacion_id);
       if (!Number.isFinite(aid)) continue;
-      const arr = miembrosByAsign.get(aid) || [];
-      arr.push(Number(m.docente_usuario_id));
-      miembrosByAsign.set(aid, arr);
+      const sid = studentByAsign.get(aid);
+      if (!Number.isFinite(Number(sid))) continue;
+      const arr = tribunalByStudent.get(Number(sid)) || [];
+      const did = Number(m.docente_usuario_id);
+      if (Number.isFinite(did)) arr.push(did);
+      tribunalByStudent.set(Number(sid), arr);
+    }
+    for (const a of (assignments || [])) {
+      const sid = Number(a.id_user_student);
+      if (!Number.isFinite(sid)) continue;
+      const arr = tribunalByStudent.get(sid) || [];
+      const ids = [a.id_president, a.id_secretary, a.id_vocal].map(Number).filter(Number.isFinite);
+      for (const id of ids) arr.push(id);
+      tribunalByStudent.set(sid, arr);
     }
 
-    const asignsWithTrib = asigns.filter(a => {
-      const arr = miembrosByAsign.get(Number(a.uic_asignacion_id)) || [];
-      return Array.isArray(arr) && arr.length > 0;
-    });
-    if (!asignsWithTrib.length) return res.json([]);
+    // Reporte específico UIC: listar todos los estudiantes con tutor (topics.id_tutor)
+    // El tribunal es informativo: si aún no está asignado, se retorna vacío.
+    const topicByStudent = new Map((topics || []).map(t => [Number(t.id_user), t]));
+    const topicsForReport = estIds.map(id => topicByStudent.get(Number(id)) || ({ id_user: Number(id), id_tutor: null, career: null }));
 
+    // ids de usuarios para mapear nombres (estudiantes, tutores, y tribunal)
     const userIds = Array.from(new Set([
-      ...asignsWithTrib.map(a => Number(a.estudiante_id)),
-      ...asignsWithTrib.map(a => Number(a.tutor_usuario_id)).filter(Number.isFinite),
-      ...(miembros || []).map(m => Number(m.docente_usuario_id)).filter(Number.isFinite)
+      ...estIds.map(Number).filter(Number.isFinite),
+      ...topicsForReport.map(t => Number((t || {}).id_tutor)).filter(Number.isFinite),
+      ...(miembros || []).map(m => Number(m.docente_usuario_id)).filter(Number.isFinite),
+      ...(assignments || []).flatMap(x => [x.id_president, x.id_secretary, x.id_vocal]).map(Number).filter(Number.isFinite),
+      ...(uicAsignsAll || []).map(a => Number(a.tutor_usuario_id)).filter(Number.isFinite),
     ]));
-    const usuarios = await prisma.usuarios.findMany({ where: { usuario_id: { in: userIds } }, select: { usuario_id: true, nombre: true, apellido: true } }).catch(() => []);
+    const usuarios = await prisma.usuarios.findMany({
+      where: { usuario_id: { in: userIds } },
+      select: { usuario_id: true, nombre: true, apellido: true }
+    }).catch(() => []);
     const nameMap = new Map((usuarios || []).map(u => [Number(u.usuario_id), `${u.nombre} ${u.apellido}`.trim()]));
-    const careerMap = await getCareerNameMap(asignsWithTrib.map(a => a.carrera_id));
 
-    const data = asignsWithTrib.map(a => {
-      const tribIds = (miembrosByAsign.get(Number(a.uic_asignacion_id)) || []).filter(Number.isFinite);
-      const tribNames = tribIds.map(id => nameMap.get(Number(id))).filter(Boolean);
+    const careerMap = await getCareerNameMap((modsUic || []).map(m => m.carrera_id));
+
+    const modByStudent = new Map((modsUic || []).map(m => [Number(m.estudiante_id), m]));
+
+    const data = topicsForReport.map(t => {
+      const estId = Number((t || {}).id_user);
+      const asign = asignByStudent.get(estId);
+      const mod = modByStudent.get(estId);
+      const tribIds = (tribunalByStudent.get(estId) || []).map(Number).filter(Number.isFinite);
+      const uniqueTribIds = Array.from(new Set(tribIds));
+      const tribNames = uniqueTribIds.map(id => nameMap.get(Number(id))).filter(Boolean);
+      const tutorId = asign?.tutor_usuario_id != null ? Number(asign.tutor_usuario_id) : (t.id_tutor != null ? Number(t.id_tutor) : null);
       return {
-        id_user: Number(a.estudiante_id),
-        estudiante: nameMap.get(Number(a.estudiante_id)) || `Usuario ${a.estudiante_id}`,
-        carrera_id: Number(a.carrera_id),
-        carrera: careerMap[Number(a.carrera_id)] || null,
+        id_user: estId,
+        estudiante: nameMap.get(estId) || `Usuario ${estId}`,
+        carrera_id: mod?.carrera_id != null ? Number(mod.carrera_id) : (asign?.carrera_id != null ? Number(asign.carrera_id) : null),
+        carrera: mod?.carrera_id != null
+          ? (careerMap[Number(mod.carrera_id)] || null)
+          : (asign?.carrera_id != null ? (careerMap[Number(asign.carrera_id)] || null) : (t?.career != null ? String(t.career) : null)),
         modalidad: 'UIC',
-        tutor: a.tutor_usuario_id ? (nameMap.get(Number(a.tutor_usuario_id)) || null) : null,
-        tribunal: tribNames.join(', '),
+        tutor: Number.isFinite(Number(tutorId)) ? (nameMap.get(Number(tutorId)) || null) : null,
+        tribunal: tribNames.length ? tribNames.join(', ') : null,
       };
-    }).sort((x,y)=> String(x.estudiante).localeCompare(String(y.estudiante)));
+    }).sort((a,b)=> String(a.estudiante).localeCompare(String(b.estudiante)));
 
     res.json(data);
   } catch (err) { next(err); }
